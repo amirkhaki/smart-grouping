@@ -145,7 +145,16 @@ try:
         )
 
     # 3. Pip install dependencies
-    sh([sys.executable, "-m", "pip", "install", "-q", "-e", str(SRC)])
+    try:
+        sh([sys.executable, "-m", "pip", "install", "compressai==1.1.5", "gdown", "h5py", "timm", "ptflops", "thop"])
+    except Exception as e:
+        print(f"Warning: compressai==1.1.5 install failed ({e}), trying generic compressai...", flush=True)
+        sh([sys.executable, "-m", "pip", "install", "compressai", "gdown", "h5py", "timm", "ptflops", "thop"])
+
+    try:
+        sh([sys.executable, "-m", "pip", "install", "--no-deps", "-e", str(SRC)])
+    except Exception as e:
+        print(f"Warning: pip install -e failed ({e}), relying on PYTHONPATH fallback", flush=True)
 
     # Record GPU and library versions
     try:
@@ -164,6 +173,7 @@ try:
     # 4. Execute target command
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
     if caltech_data_root and "CALTECH_DATA_ROOT" not in env:
         env["CALTECH_DATA_ROOT"] = str(caltech_data_root)
     if tier1_cache_dir and "TIER1_CACHE_DIR" not in env:
