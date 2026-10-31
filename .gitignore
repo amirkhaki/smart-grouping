@@ -38,8 +38,8 @@ checkpoints/
 *.hdf5
 *.npy
 *.npz
-dataset/
-datasets/
+/dataset/
+/datasets/
 256_ObjectCategories/
 
 # Kaggle & CI artifacts

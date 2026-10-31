@@ -29,7 +29,17 @@ from benchmarks.datasets.caltech256 import (
 )
 from benchmarks.download_checkpoints import download_checkpoint
 from benchmarks.elic_extractor import ELICFeatureExtractor
-from train import CustomDataParallel
+
+
+class CustomDataParallel(nn.DataParallel):
+    """Custom DataParallel to access inner module methods and attributes."""
+
+    def __getattr__(self, key):
+        try:
+            return super().__getattr__(key)
+        except AttributeError:
+            return getattr(self.module, key)
+
 
 
 def parse_args(argv=None):
