@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-grouping"
+version = "0.1.0"
+description = "Latent Slice Classification Benchmarking on Frozen ELIC"
+dependencies = [
+    "torch",
+    "torchvision",
+    "h5py",
+    "pandas",
+    "matplotlib",
+    "gdown",
+    "scipy",
+    "tqdm",
+    "Pillow",
+    "compressai==1.1.5",
+]
+
+[project.scripts]
+elic-cache = "benchmarks.cache_latents:main"
+elic-train = "benchmarks.train_probe:main"
+elic-download = "benchmarks.download_checkpoints:main"

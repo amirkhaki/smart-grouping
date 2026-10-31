@@ -1,0 +1,52 @@
+name: kaggle-tier1
+
+# Tier-1 Caching: Extracts deterministic quantized and continuous ELIC latents
+# alongside per-slice bitrates on Caltech-256 and writes caltech256_elic_latents.h5
+# to /kaggle/working on 2x Tesla T4 GPUs.
+#
+# Pushes to kernel slug "smart-grouping-tier1-cache". Tier-2 attaches this kernel
+# as a kernel source to access the cached latents.
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to execute on Kaggle"
+        required: true
+        default: "python -m benchmarks.cache_latents --checkpoint 0.032 --batch-size 64 --out-dir /kaggle/working"
+      checkpoint:
+        description: "ELIC Checkpoint lambda (0.032, 0.004, etc.)"
+        required: true
+        default: "0.032"
+
+concurrency:
+  group: kaggle-tier1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - uses: ./.github/actions/kaggle-run
+        with:
+          kaggle_owner: ${{ vars.KAGGLE_USERNAME || secrets.KAGGLE_USERNAME }}
+          kaggle_token: ${{ secrets.KAGGLE_API_TOKEN || secrets.KAGGLE_KEY }}
+          slug: smart-grouping-tier1-cache
+          command: ${{ inputs.command }}
+          enable_gpu: "true"
+          dataset_sources: '["jessicali9530/caltech256"]'
+          kernel_sources: "[]"
+          artifact_name: kaggle-tier1-meta-${{ github.sha }}-${{ github.run_id }}
+          # Large .h5 remains on Kaggle; only small provenance files downloaded to GitHub
+          artifact_paths: |
+            out/run_meta.json
+            out/*.log
