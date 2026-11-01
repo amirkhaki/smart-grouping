@@ -55,6 +55,21 @@ def generate_pareto_plot(
         ("linear_probe", "continuous"): {"color": "#ff7f0e", "marker": "v", "label": "LinearProbe (Continuous y)", "linestyle": "--"},
     }
 
+    # Dynamically discover any custom architectures (e.g. latent_head_w8, latent_head_w16, etc.)
+    all_arch_quants = cum_df[["arch", "quant"]].drop_duplicates().values
+    palette = ["#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+    p_idx = 0
+    for arch, quant in all_arch_quants:
+        key = (arch, quant)
+        if key not in styles:
+            styles[key] = {
+                "color": palette[p_idx % len(palette)],
+                "marker": "D" if quant == "quantized" else "X",
+                "label": f"{arch} ({quant})",
+                "linestyle": "-" if quant == "quantized" else "--",
+            }
+            p_idx += 1
+
     has_data = False
     for (arch, quant), style in styles.items():
         subset = cum_df[(cum_df["arch"] == arch) & (cum_df["quant"] == quant)]
@@ -101,3 +116,68 @@ def generate_pareto_plot(
     plt.savefig(out_path)
     plt.close()
     print(f"[PLOT] Generated Rate-Accuracy Pareto curve: {out_path}")
+
+
+def generate_stem_ablation_plot(
+    results_df: pd.DataFrame,
+    out_plot_path: Union[str, Path],
+    view: str = "C4",
+    title: Optional[str] = None,
+):
+    """Generate stem width ablation plot (Stem Width vs Top-1 Accuracy) for a given slice view."""
+    df_view = results_df[results_df["view"] == view].copy()
+    if df_view.empty or "stem_channels" not in df_view.columns:
+        return
+
+    # Filter to rows that have stem_channels defined
+    df_valid = df_view[df_view["stem_channels"].notna()].copy()
+    if df_valid["stem_channels"].nunique() <= 1:
+        return  # No ablation to plot if only 1 stem width
+
+    plt.figure(figsize=(9, 5.5), dpi=150)
+    colors = {"quantized": "#1f77b4", "continuous": "#2ca02c"}
+    markers = {"quantized": "o", "continuous": "s"}
+    linestyles = {"quantized": "-", "continuous": "--"}
+
+    for quant in ["quantized", "continuous"]:
+        sub = df_valid[df_valid["quant"] == quant].sort_values(by="stem_channels")
+        if not sub.empty:
+            label = f"{view} ({quant.capitalize()})"
+            plt.plot(
+                sub["stem_channels"],
+                sub["top1_acc"],
+                color=colors.get(quant, "blue"),
+                marker=markers.get(quant, "o"),
+                linestyle=linestyles.get(quant, "-"),
+                linewidth=2.2,
+                markersize=8,
+                label=label,
+            )
+            for _, row in sub.iterrows():
+                p_val = row.get("num_params", 0)
+                p_str = f"{p_val/1e3:.1f}k" if p_val < 1e6 else f"{p_val/1e6:.2f}M"
+                plt.annotate(
+                    f"{row['top1_acc']:.1f}%\n({p_str})",
+                    (row["stem_channels"], row["top1_acc"]),
+                    textcoords="offset points",
+                    xytext=(0, 10),
+                    ha="center",
+                    fontsize=8,
+                )
+
+    plot_title = title or f"Stem Width Capacity Ablation on {view} (Frozen ELIC, Caltech-256)"
+    widths = sorted(df_valid["stem_channels"].astype(int).unique())
+    plt.xscale("log", base=2)
+    plt.xticks(widths, [str(w) for w in widths])
+    plt.xlabel("Stem Channel Width (W)", fontsize=12)
+    plt.ylabel("Top-1 Accuracy (%)", fontsize=12)
+    plt.title(plot_title, fontsize=13, fontweight="bold")
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.legend(loc="lower right", framealpha=0.9)
+    plt.tight_layout()
+
+    out_path = Path(out_plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path)
+    plt.close()
+    print(f"[PLOT] Generated Stem Width ablation curve: {out_path}")

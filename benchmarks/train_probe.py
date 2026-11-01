@@ -48,7 +48,11 @@ from benchmarks.config import (
     SliceSpec,
 )
 from benchmarks.datasets.hdf5_dataset import HDF5LatentDataset
-from benchmarks.evaluate import export_master_results, generate_pareto_plot
+from benchmarks.evaluate import (
+    export_master_results,
+    generate_pareto_plot,
+    generate_stem_ablation_plot,
+)
 from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
 
 
@@ -141,6 +145,13 @@ def parse_args(argv=None):
         nargs="+",
         default=None,
         help="Filter slice views (e.g. S0 S4 C4). If omitted, evaluates all 9 views.",
+    )
+    parser.add_argument(
+        "--stem-channels",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Stem channel widths for LatentHead (e.g. 8 16 32 128). Default: [128].",
     )
     parser.add_argument(
         "--amp",
@@ -320,6 +331,7 @@ def main(argv=None):
         num_classes=NUM_CLASSES,
         architectures=arch_filter,
         views=args.views,
+        stem_channels=args.stem_channels,
     ).to(args.device)
 
     total_heads_count = len(container.head_keys)
@@ -461,6 +473,9 @@ def main(argv=None):
         top5 = (head_correct_top5[head_key] / max(total_test_samples, 1)) * 100.0
         bpp = slice_bpp_map.get(view, 0.0)
 
+        stem_ch = meta.get("stem_channels")
+        num_params = meta.get("num_params", 0)
+
         records.append({
             "head_key": head_key,
             "view": view,
@@ -468,6 +483,8 @@ def main(argv=None):
             "arch": arch,
             "quant": quant,
             "in_channels": spec.num_channels,
+            "stem_channels": stem_ch,
+            "num_params": num_params,
             "bpp": round(bpp, 4),
             "top1_acc": round(top1, 2),
             "top5_acc": round(top5, 2),
@@ -476,13 +493,16 @@ def main(argv=None):
 
         # Also add S0 as cumulative C0 for Pareto plotting consistency
         if view == "S0":
+            c0_head_key = f"C0_{arch}_{quant}" if not head_key.startswith("C0") else head_key
             records.append({
-                "head_key": f"C0_{arch}_{quant}",
+                "head_key": c0_head_key,
                 "view": "C0",
                 "category": "cumulative",
                 "arch": arch,
                 "quant": quant,
                 "in_channels": spec.num_channels,
+                "stem_channels": stem_ch,
+                "num_params": num_params,
                 "bpp": round(bpp_z + bpp, 4),
                 "top1_acc": round(top1, 2),
                 "top5_acc": round(top5, 2),
@@ -497,8 +517,21 @@ def main(argv=None):
     df = export_master_results(records, out_csv, out_json)
     generate_pareto_plot(df, out_plot)
 
+    # If any view has multiple stem channel widths, generate ablation curve
+    for v in df["view"].unique():
+        sub = df[df["view"] == v]
+        if "stem_channels" in sub.columns and sub["stem_channels"].dropna().nunique() > 1:
+            ablation_plot = out_dir / f"stem_width_ablation_{v}.png"
+            generate_stem_ablation_plot(df, ablation_plot, view=v)
+
     print("\n[BENCHMARK COMPLETE] Summary of Top-1 Accuracies:")
-    print(df[["view", "category", "arch", "quant", "bpp", "top1_acc"]].to_string())
+    display_cols = ["view", "category", "arch", "quant"]
+    if "stem_channels" in df.columns and df["stem_channels"].dropna().nunique() > 1:
+        display_cols.append("stem_channels")
+    if "num_params" in df.columns and df["num_params"].nunique() > 1:
+        display_cols.append("num_params")
+    display_cols.extend(["bpp", "top1_acc"])
+    print(df[display_cols].to_string())
 
 
 if __name__ == "__main__":

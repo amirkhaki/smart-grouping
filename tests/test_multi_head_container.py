@@ -51,6 +51,35 @@ class TestMultiHeadContainer(unittest.TestCase):
                         f"Parameter {name} in head {head_key} did not receive gradients!",
                     )
 
+    def test_stem_channels_ablation(self):
+        """Container instantiates specified stem channel heads for ablation studies."""
+        container = MultiHeadClassifierContainer(
+            num_classes=NUM_CLASSES,
+            views=["C4"],
+            architectures=["latent_head"],
+            stem_channels=[8, 16, 32, 128],
+        )
+        expected_keys = [
+            "C4_latent_head_w8_quantized",
+            "C4_latent_head_w8_continuous",
+            "C4_latent_head_w16_quantized",
+            "C4_latent_head_w16_continuous",
+            "C4_latent_head_w32_quantized",
+            "C4_latent_head_w32_continuous",
+            "C4_latent_head_w128_quantized",
+            "C4_latent_head_w128_continuous",
+        ]
+        self.assertEqual(len(container.heads), 8)
+        self.assertEqual(sorted(container.head_keys), sorted(expected_keys))
+
+        # Verify parameter scaling
+        params_w8 = container.head_metadata["C4_latent_head_w8_quantized"]["num_params"]
+        params_w16 = container.head_metadata["C4_latent_head_w16_quantized"]["num_params"]
+        params_w32 = container.head_metadata["C4_latent_head_w32_quantized"]["num_params"]
+        params_w128 = container.head_metadata["C4_latent_head_w128_quantized"]["num_params"]
+
+        self.assertTrue(params_w8 < params_w16 < params_w32 < params_w128)
+
 
 if __name__ == "__main__":
     unittest.main()

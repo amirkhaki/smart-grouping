@@ -1,12 +1,13 @@
 """Multi-head container to evaluate all 36 probe configurations concurrently."""
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from benchmarks.config import (
+    LATENT_HEAD_STEM_CHANNELS,
     NUM_CLASSES,
     PROBE_ARCHITECTURES,
     QUANTIZATION_MODES,
@@ -29,15 +30,23 @@ class MultiHeadClassifierContainer(nn.Module):
         architectures: Optional[List[str]] = None,
         views: Optional[List[str]] = None,
         quant_modes: Optional[List[str]] = None,
+        stem_channels: Optional[Union[int, List[int]]] = None,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.heads = nn.ModuleDict()
-        self.head_metadata: Dict[str, Dict[str, Union[str, int, SliceSpec]]] = {}
+        self.head_metadata: Dict[str, Dict[str, Any]] = {}
 
         selected_archs = architectures or PROBE_ARCHITECTURES
         selected_views = views or list(SLICE_SPECS.keys())
         selected_quants = quant_modes or QUANTIZATION_MODES
+
+        if stem_channels is None:
+            stem_widths = [LATENT_HEAD_STEM_CHANNELS]
+        elif isinstance(stem_channels, int):
+            stem_widths = [stem_channels]
+        else:
+            stem_widths = list(stem_channels)
 
         # Instantiate heads
         for slice_name in selected_views:
@@ -48,22 +57,59 @@ class MultiHeadClassifierContainer(nn.Module):
 
             for arch in selected_archs:
                 for quant in selected_quants:
-                    head_key = f"{slice_name}_{arch}_{quant}"
                     if arch == "linear_probe":
+                        head_key = f"{slice_name}_{arch}_{quant}"
                         head = LinearProbe(in_channels=in_ch, num_classes=num_classes)
+                        self.heads[head_key] = head
+                        self.head_metadata[head_key] = {
+                            "slice_name": slice_name,
+                            "slice_spec": spec,
+                            "arch": arch,
+                            "base_arch": "linear_probe",
+                            "quant": quant,
+                            "in_channels": in_ch,
+                            "stem_channels": None,
+                            "num_params": sum(p.numel() for p in head.parameters()),
+                        }
+                    elif arch.startswith("latent_head_w"):
+                        # Specific stem width requested via architecture name
+                        stem_w = int(arch.split("_w")[-1])
+                        head_key = f"{slice_name}_{arch}_{quant}"
+                        head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                        self.heads[head_key] = head
+                        self.head_metadata[head_key] = {
+                            "slice_name": slice_name,
+                            "slice_spec": spec,
+                            "arch": arch,
+                            "base_arch": "latent_head",
+                            "quant": quant,
+                            "in_channels": in_ch,
+                            "stem_channels": stem_w,
+                            "num_params": sum(p.numel() for p in head.parameters()),
+                        }
                     elif arch == "latent_head":
-                        head = LatentHead(in_channels=in_ch, num_classes=num_classes)
+                        for stem_w in stem_widths:
+                            if stem_widths == [LATENT_HEAD_STEM_CHANNELS]:
+                                head_key = f"{slice_name}_{arch}_{quant}"
+                                arch_label = arch
+                            else:
+                                head_key = f"{slice_name}_{arch}_w{stem_w}_{quant}"
+                                arch_label = f"latent_head_w{stem_w}"
+
+                            head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                            self.heads[head_key] = head
+                            self.head_metadata[head_key] = {
+                                "slice_name": slice_name,
+                                "slice_spec": spec,
+                                "arch": arch_label,
+                                "base_arch": "latent_head",
+                                "quant": quant,
+                                "in_channels": in_ch,
+                                "stem_channels": stem_w,
+                                "num_params": sum(p.numel() for p in head.parameters()),
+                            }
                     else:
                         raise ValueError(f"Unknown architecture: {arch}")
-
-                    self.heads[head_key] = head
-                    self.head_metadata[head_key] = {
-                        "slice_name": slice_name,
-                        "slice_spec": spec,
-                        "arch": arch,
-                        "quant": quant,
-                        "in_channels": in_ch,
-                    }
 
         # Dynamic early stopping tracking: active head keys
         self.active_head_keys: List[str] = list(self.heads.keys())
