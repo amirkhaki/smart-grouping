@@ -45,7 +45,7 @@ def compute_channel_densities(
 
     Args:
         h5_source: Path to HDF5 file or open h5py.File object.
-        split: Dataset split ('train' or 'test').
+        split: Dataset split ('train', 'test', or 'all').
         batch_size: Batch size for memory-efficient streaming.
         max_samples: Optional upper limit on samples for faster approximation.
 
@@ -54,29 +54,50 @@ def compute_channel_densities(
     """
     should_close = False
     if isinstance(h5_source, (str, Path)):
-        f = h5py.File(h5_source, "r", swmr=True)
+        f = h5py.File(str(h5_source), "r", swmr=True)
         should_close = True
     else:
         f = h5_source
 
     try:
-        ds = f[f"{split}/y_quantized"]
-        total_samples = ds.shape[0]
-        if max_samples:
-            total_samples = min(total_samples, max_samples)
+        if "latents_quantized" not in f:
+            raise KeyError(f"Archive missing 'latents_quantized'. Keys present: {list(f.keys())}")
+
+        ds = f["latents_quantized"]
+        is_train = f["is_train"][:] if "is_train" in f else np.ones(ds.shape[0], dtype=bool)
+
+        if split == "train":
+            split_mask = is_train
+        elif split == "test":
+            split_mask = ~is_train
+        else:
+            split_mask = np.ones(len(is_train), dtype=bool)
 
         num_channels = ds.shape[1]  # 320
         spatial_elements = ds.shape[2] * ds.shape[3]  # 16 * 16 = 256
 
         non_zero_counts = np.zeros(num_channels, dtype=np.int64)
         processed = 0
+        N_total = len(is_train)
 
-        for i in range(0, total_samples, batch_size):
-            end_idx = min(i + batch_size, total_samples)
-            batch = ds[i:end_idx]  # (B, 320, 16, 16)
-            # Count non-zero symbols per channel
-            non_zero_counts += np.count_nonzero(batch, axis=(0, 2, 3))
-            processed += (end_idx - i)
+        # Stream in contiguous chunks for optimal HDF5 I/O throughput
+        for i in range(0, N_total, batch_size):
+            chunk_slice = slice(i, min(i + batch_size, N_total))
+            chunk_mask = split_mask[chunk_slice]
+            if not np.any(chunk_mask):
+                continue
+
+            chunk_data = ds[chunk_slice]  # (B, 320, 16, 16)
+            valid_data = chunk_data[chunk_mask]
+
+            if max_samples and (processed + len(valid_data) > max_samples):
+                valid_data = valid_data[: max_samples - processed]
+
+            non_zero_counts += np.count_nonzero(valid_data, axis=(0, 2, 3))
+            processed += len(valid_data)
+
+            if max_samples and processed >= max_samples:
+                break
 
         total_elements_per_ch = processed * spatial_elements
         densities = non_zero_counts.astype(np.float64) / max(total_elements_per_ch, 1)
