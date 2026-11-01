@@ -17,6 +17,26 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+
+def get_autocast(device_type: str = "cuda", enabled: bool = True):
+    """Context manager for AMP autocast supporting PyTorch 1.x and modern PyTorch 2.x."""
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        try:
+            return torch.amp.autocast(device_type, enabled=enabled)
+        except TypeError:
+            return torch.amp.autocast(enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
+def get_grad_scaler(device_type: str = "cuda", enabled: bool = True):
+    """Gradient scaler supporting PyTorch 1.x and modern PyTorch 2.x."""
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler(device_type, enabled=enabled)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
+
 from benchmarks.config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CACHE_FILENAME,
@@ -231,6 +251,7 @@ def evaluate_active_heads(
     correct_counts = {k: 0 for k in target_keys}
     total = 0
 
+    device_type = "cuda" if str(device).startswith("cuda") else "cpu"
     with torch.no_grad():
         for batch in loader:
             y_q = batch["y_quantized"].to(device, non_blocking=use_cuda)
@@ -239,7 +260,7 @@ def evaluate_active_heads(
             B = labels.size(0)
             total += B
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with get_autocast(device_type=device_type, enabled=use_amp):
                 logits_dict = model(y_q, y_c)
 
             for head_key in target_keys:
@@ -315,7 +336,8 @@ def main(argv=None):
 
     # Optimizer, Scaler, and Cosine Annealing Scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    device_type = "cuda" if str(args.device).startswith("cuda") else "cpu"
+    scaler = get_grad_scaler(device_type=device_type, enabled=use_amp)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # 4. State tracking for dynamic early stopping & per-head best checkpoints
@@ -346,7 +368,7 @@ def main(argv=None):
             labels = batch["label"].to(args.device, non_blocking=use_cuda)
 
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with get_autocast(device_type=device_type, enabled=use_amp):
                 logits_dict = model(y_q, y_c)
                 total_loss, _ = raw_container.compute_loss(logits_dict, labels)
 
@@ -410,7 +432,7 @@ def main(argv=None):
             total_test_samples += B
 
             all_bitrates_list.append(batch["bitrates_bpp"].numpy())
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with get_autocast(device_type=device_type, enabled=use_amp):
                 # Pass all_heads=True to evaluate all heads
                 logits_dict = raw_container(y_q, y_c, all_heads=True)
 
