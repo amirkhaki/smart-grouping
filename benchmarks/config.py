@@ -100,7 +100,7 @@ HDF5_CHUNK_SHAPE: Tuple[int, int, int, int] = (32, 320, 16, 16)
 DEFAULT_CACHE_FILENAME: str = "caltech256_elic_latents.h5"
 
 # Training Hyperparameters
-DEFAULT_BATCH_SIZE: int = 64
+DEFAULT_BATCH_SIZE: int = 128
 DEFAULT_EPOCHS: int = 50
 DEFAULT_LR: float = 1e-3
 DEFAULT_WEIGHT_DECAY: float = 1e-4

@@ -48,7 +48,7 @@ def parse_args(argv=None):
         "--batch-size",
         type=int,
         default=DEFAULT_BATCH_SIZE,
-        help="Batch size per GPU (default: 64)",
+        help=f"Batch size across all GPUs (default: {DEFAULT_BATCH_SIZE})",
     )
     parser.add_argument(
         "--epochs",
@@ -73,6 +73,18 @@ def parse_args(argv=None):
         type=int,
         default=4,
         help="DataLoader worker count (default: 4)",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        default=True,
+        help="Enable Automatic Mixed Precision (FP16) on CUDA (default: True)",
+    )
+    parser.add_argument(
+        "--no-amp",
+        dest="amp",
+        action="store_false",
+        help="Disable Automatic Mixed Precision",
     )
     parser.add_argument(
         "--device",
@@ -176,19 +188,24 @@ def main(argv=None):
 
     print(f"[INIT] Loaded {len(train_dataset)} train samples, {len(test_dataset)} test samples")
 
+    use_cuda = (args.device == "cuda") and torch.cuda.is_available()
+    use_amp = args.amp and use_cuda
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=(args.device == "cuda"),
+        pin_memory=use_cuda,
+        persistent_workers=(args.num_workers > 0),
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=(args.device == "cuda"),
+        pin_memory=use_cuda,
+        persistent_workers=(args.num_workers > 0),
     )
 
     # 3. Instantiate Multi-Head Container
@@ -196,19 +213,21 @@ def main(argv=None):
     container = MultiHeadClassifierContainer(num_classes=NUM_CLASSES).to(args.device)
 
     # DataParallel wrapper for 2x Tesla T4 GPUs
-    if args.device == "cuda" and torch.cuda.device_count() > 1:
+    if use_cuda and torch.cuda.device_count() > 1:
         print(f"[INIT] Distributing container across {torch.cuda.device_count()} GPUs using DataParallel")
         model = nn.DataParallel(container)
     else:
         model = container
 
-    # Optimizer and Cosine Annealing Scheduler
+    # Optimizer, Scaler, and Cosine Annealing Scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     # 4. Training Loop
     t_start = time.time()
-    print(f"\n[TRAIN] Beginning {epochs} epochs of multi-head training...")
+    amp_status = "Enabled (FP16)" if use_amp else "Disabled (FP32)"
+    print(f"\n[TRAIN] Beginning {epochs} epochs of multi-head training (Batch Size: {args.batch_size}, AMP: {amp_status})...")
 
     raw_container = model.module if isinstance(model, nn.DataParallel) else model
 
@@ -218,16 +237,18 @@ def main(argv=None):
         num_batches = 0
 
         for batch in train_loader:
-            y_q = batch["y_quantized"].to(args.device)
-            y_c = batch["y_continuous"].to(args.device)
-            labels = batch["label"].to(args.device)
+            y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda)
+            y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda)
+            labels = batch["label"].to(args.device, non_blocking=use_cuda)
 
             optimizer.zero_grad()
-            logits_dict = model(y_q, y_c)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits_dict = model(y_q, y_c)
+                total_loss, _ = raw_container.compute_loss(logits_dict, labels)
 
-            total_loss, _ = raw_container.compute_loss(logits_dict, labels)
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += total_loss.item()
             num_batches += 1
@@ -251,14 +272,15 @@ def main(argv=None):
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating test set"):
-            y_q = batch["y_quantized"].to(args.device)
-            y_c = batch["y_continuous"].to(args.device)
-            labels = batch["label"].to(args.device)
+            y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda)
+            y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda)
+            labels = batch["label"].to(args.device, non_blocking=use_cuda)
             B = labels.size(0)
             total_test_samples += B
 
             all_bitrates_list.append(batch["bitrates_bpp"].numpy())
-            logits_dict = model(y_q, y_c)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits_dict = model(y_q, y_c)
 
             for head_key, logits in logits_dict.items():
                 _, pred = logits.topk(5, 1, True, True)

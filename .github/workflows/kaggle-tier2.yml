@@ -11,7 +11,7 @@ on:
       command:
         description: "Command to execute on Kaggle"
         required: true
-        default: "python -m benchmarks.train_probe --batch-size 64 --epochs 50 --out-dir /kaggle/working"
+        default: "python -m benchmarks.train_probe --batch-size 128 --epochs 50 --out-dir /kaggle/working"
       extra_kernel_sources:
         description: 'Extra kernel(s) to attach as JSON list, e.g. ["owner/slug"]'
         required: false
@@ -27,7 +27,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 
