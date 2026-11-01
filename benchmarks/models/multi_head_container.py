@@ -109,9 +109,14 @@ class MultiHeadClassifierContainer(nn.Module):
                                 }
 
         # 2. Standard contiguous slice views
-        if views is not None or custom_channel_subsets is None:
-            selected_views = views or list(SLICE_SPECS.keys())
-            for slice_name in selected_views:
+        if views is not None:
+            selected_views = views
+        elif custom_channel_subsets is None:
+            selected_views = list(SLICE_SPECS.keys())
+        else:
+            selected_views = []
+
+        for slice_name in selected_views:
                 if slice_name not in SLICE_SPECS:
                     raise ValueError(f"Unknown slice view: {slice_name}. Valid views: {list(SLICE_SPECS.keys())}")
                 spec = SLICE_SPECS[slice_name]
