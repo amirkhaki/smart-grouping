@@ -32,9 +32,11 @@ class MultiHeadClassifierContainer(nn.Module):
         quant_modes: Optional[List[str]] = None,
         stem_channels: Optional[Union[int, List[int]]] = None,
         custom_channel_subsets: Optional[Dict[str, List[int]]] = None,
+        native_width: bool = False,
     ):
         super().__init__()
         self.num_classes = num_classes
+        self.native_width = native_width
         self.heads = nn.ModuleDict()
         self.head_metadata: Dict[str, Dict[str, Any]] = {}
 
@@ -67,6 +69,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                 "quant": quant,
                                 "in_channels": in_ch,
                                 "stem_channels": None,
+                                "native_width": False,
                                 "num_params": sum(p.numel() for p in head.parameters()),
                             }
                         elif arch.startswith("latent_head_w"):
@@ -83,17 +86,14 @@ class MultiHeadClassifierContainer(nn.Module):
                                 "quant": quant,
                                 "in_channels": in_ch,
                                 "stem_channels": stem_w,
+                                "native_width": False,
                                 "num_params": sum(p.numel() for p in head.parameters()),
                             }
                         elif arch == "latent_head":
-                            for stem_w in stem_widths:
-                                if stem_widths == [LATENT_HEAD_STEM_CHANNELS]:
-                                    head_key = f"{subset_name}_{arch}_{quant}"
-                                    arch_label = arch
-                                else:
-                                    head_key = f"{subset_name}_{arch}_w{stem_w}_{quant}"
-                                    arch_label = f"latent_head_w{stem_w}"
-
+                            if native_width:
+                                stem_w = in_ch
+                                head_key = f"{subset_name}_{arch}_native_{quant}"
+                                arch_label = "latent_head_native"
                                 head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
                                 self.heads[head_key] = head
                                 self.head_metadata[head_key] = {
@@ -105,8 +105,32 @@ class MultiHeadClassifierContainer(nn.Module):
                                     "quant": quant,
                                     "in_channels": in_ch,
                                     "stem_channels": stem_w,
+                                    "native_width": True,
                                     "num_params": sum(p.numel() for p in head.parameters()),
                                 }
+                            else:
+                                for stem_w in stem_widths:
+                                    if stem_widths == [LATENT_HEAD_STEM_CHANNELS]:
+                                        head_key = f"{subset_name}_{arch}_{quant}"
+                                        arch_label = arch
+                                    else:
+                                        head_key = f"{subset_name}_{arch}_w{stem_w}_{quant}"
+                                        arch_label = f"latent_head_w{stem_w}"
+
+                                    head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                                    self.heads[head_key] = head
+                                    self.head_metadata[head_key] = {
+                                        "slice_name": subset_name,
+                                        "slice_spec": None,
+                                        "channel_indices": indices,
+                                        "arch": arch_label,
+                                        "base_arch": "latent_head",
+                                        "quant": quant,
+                                        "in_channels": in_ch,
+                                        "stem_channels": stem_w,
+                                        "native_width": False,
+                                        "num_params": sum(p.numel() for p in head.parameters()),
+                                    }
 
         # 2. Standard contiguous slice views
         if views is not None:
@@ -117,46 +141,67 @@ class MultiHeadClassifierContainer(nn.Module):
             selected_views = []
 
         for slice_name in selected_views:
-                if slice_name not in SLICE_SPECS:
-                    raise ValueError(f"Unknown slice view: {slice_name}. Valid views: {list(SLICE_SPECS.keys())}")
-                spec = SLICE_SPECS[slice_name]
-                in_ch = spec.num_channels
+            if slice_name not in SLICE_SPECS:
+                raise ValueError(f"Unknown slice view: {slice_name}. Valid views: {list(SLICE_SPECS.keys())}")
+            spec = SLICE_SPECS[slice_name]
+            in_ch = spec.num_channels
 
-                for arch in selected_archs:
-                    for quant in selected_quants:
-                        if arch == "linear_probe":
-                            head_key = f"{slice_name}_{arch}_{quant}"
-                            head = LinearProbe(in_channels=in_ch, num_classes=num_classes)
-                            self.heads[head_key] = head
-                            self.head_metadata[head_key] = {
-                                "slice_name": slice_name,
-                                "slice_spec": spec,
-                                "channel_indices": None,
-                                "arch": arch,
-                                "base_arch": "linear_probe",
-                                "quant": quant,
-                                "in_channels": in_ch,
-                                "stem_channels": None,
-                                "num_params": sum(p.numel() for p in head.parameters()),
-                            }
-                        elif arch.startswith("latent_head_w"):
-                            # Specific stem width requested via architecture name
-                            stem_w = int(arch.split("_w")[-1])
-                            head_key = f"{slice_name}_{arch}_{quant}"
+            for arch in selected_archs:
+                for quant in selected_quants:
+                    if arch == "linear_probe":
+                        head_key = f"{slice_name}_{arch}_{quant}"
+                        head = LinearProbe(in_channels=in_ch, num_classes=num_classes)
+                        self.heads[head_key] = head
+                        self.head_metadata[head_key] = {
+                            "slice_name": slice_name,
+                            "slice_spec": spec,
+                            "channel_indices": None,
+                            "arch": arch,
+                            "base_arch": "linear_probe",
+                            "quant": quant,
+                            "in_channels": in_ch,
+                            "stem_channels": None,
+                            "native_width": False,
+                            "num_params": sum(p.numel() for p in head.parameters()),
+                        }
+                    elif arch.startswith("latent_head_w"):
+                        # Specific stem width requested via architecture name
+                        stem_w = int(arch.split("_w")[-1])
+                        head_key = f"{slice_name}_{arch}_{quant}"
+                        head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                        self.heads[head_key] = head
+                        self.head_metadata[head_key] = {
+                            "slice_name": slice_name,
+                            "slice_spec": spec,
+                            "channel_indices": None,
+                            "arch": arch,
+                            "base_arch": "latent_head",
+                            "quant": quant,
+                            "in_channels": in_ch,
+                            "stem_channels": stem_w,
+                            "native_width": False,
+                            "num_params": sum(p.numel() for p in head.parameters()),
+                        }
+                    elif arch == "latent_head":
+                        if native_width:
+                            stem_w = in_ch
+                            head_key = f"{slice_name}_{arch}_native_{quant}"
+                            arch_label = "latent_head_native"
                             head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
                             self.heads[head_key] = head
                             self.head_metadata[head_key] = {
                                 "slice_name": slice_name,
                                 "slice_spec": spec,
                                 "channel_indices": None,
-                                "arch": arch,
+                                "arch": arch_label,
                                 "base_arch": "latent_head",
                                 "quant": quant,
                                 "in_channels": in_ch,
                                 "stem_channels": stem_w,
+                                "native_width": True,
                                 "num_params": sum(p.numel() for p in head.parameters()),
                             }
-                        elif arch == "latent_head":
+                        else:
                             for stem_w in stem_widths:
                                 if stem_widths == [LATENT_HEAD_STEM_CHANNELS]:
                                     head_key = f"{slice_name}_{arch}_{quant}"
@@ -176,10 +221,11 @@ class MultiHeadClassifierContainer(nn.Module):
                                     "quant": quant,
                                     "in_channels": in_ch,
                                     "stem_channels": stem_w,
+                                    "native_width": False,
                                     "num_params": sum(p.numel() for p in head.parameters()),
                                 }
-                        else:
-                            raise ValueError(f"Unknown architecture: {arch}")
+                    else:
+                        raise ValueError(f"Unknown architecture: {arch}")
 
         # Dynamic early stopping tracking: active head keys
         self.active_head_keys: List[str] = list(self.heads.keys())

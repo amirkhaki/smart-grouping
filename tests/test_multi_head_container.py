@@ -98,6 +98,41 @@ class TestMultiHeadContainer(unittest.TestCase):
         self.assertEqual(container.head_metadata["LS8_latent_head_quantized"]["in_channels"], 8)
         self.assertEqual(container.head_metadata["LS16_latent_head_quantized"]["in_channels"], 16)
 
+    def test_native_width(self):
+        """Container instantiates heads with stem_channels == in_channels when native_width=True."""
+        custom_subsets = {
+            "LS8": list(range(8)),
+            "LS16": list(range(16)),
+        }
+        container = MultiHeadClassifierContainer(
+            num_classes=NUM_CLASSES,
+            views=["S0"],
+            architectures=["latent_head"],
+            quant_modes=["quantized"],
+            custom_channel_subsets=custom_subsets,
+            native_width=True,
+        )
+        self.assertEqual(len(container.heads), 3)
+        self.assertIn("LS8_latent_head_native_quantized", container.heads)
+        self.assertIn("LS16_latent_head_native_quantized", container.heads)
+        self.assertIn("S0_latent_head_native_quantized", container.heads)
+
+        meta_ls8 = container.head_metadata["LS8_latent_head_native_quantized"]
+        self.assertEqual(meta_ls8["stem_channels"], 8)
+        self.assertTrue(meta_ls8["native_width"])
+        self.assertEqual(meta_ls8["arch"], "latent_head_native")
+
+        meta_ls16 = container.head_metadata["LS16_latent_head_native_quantized"]
+        self.assertEqual(meta_ls16["stem_channels"], 16)
+        self.assertTrue(meta_ls16["native_width"])
+
+        meta_s0 = container.head_metadata["S0_latent_head_native_quantized"]
+        self.assertEqual(meta_s0["stem_channels"], 16)
+        self.assertTrue(meta_s0["native_width"])
+
+        # Parameters should strictly scale with native width
+        self.assertTrue(meta_ls8["num_params"] < meta_ls16["num_params"])
+
 
 if __name__ == "__main__":
     unittest.main()

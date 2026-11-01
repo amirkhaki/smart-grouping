@@ -217,14 +217,18 @@ def generate_least_sparse_plot(
             fontweight="bold",
         )
 
-    # Add reference baselines from S0 and C4 if available
+    # Add reference baselines from S0, S2, and C4 if available
     s0_acc = results_df[(results_df["view"] == "S0") & (results_df["quant"] == "quantized")]["top1_acc"].values
     if len(s0_acc) > 0:
-        plt.axhline(y=s0_acc[0], color="#ff7f0e", linestyle="--", alpha=0.7, label=f"Native S0 (16 ch: {s0_acc[0]:.1f}%)")
+        plt.axhline(y=s0_acc[0], color="#ff7f0e", linestyle="--", alpha=0.7, label=f"Slice S0 (16 ch: {s0_acc[0]:.1f}%)")
+
+    s2_acc = results_df[(results_df["view"] == "S2") & (results_df["quant"] == "quantized")]["top1_acc"].values
+    if len(s2_acc) > 0:
+        plt.axhline(y=s2_acc[0], color="#9467bd", linestyle="-.", alpha=0.7, label=f"Slice S2 (32 ch: {s2_acc[0]:.1f}%)")
 
     c4_acc = results_df[(results_df["view"] == "C4") & (results_df["quant"] == "quantized")]["top1_acc"].values
     if len(c4_acc) > 0:
-        plt.axhline(y=c4_acc[0], color="#1f77b4", linestyle=":", alpha=0.7, label=f"Native C4 (320 ch: {c4_acc[0]:.1f}%)")
+        plt.axhline(y=c4_acc[0], color="#1f77b4", linestyle=":", alpha=0.7, label=f"Slice C4 (320 ch: {c4_acc[0]:.1f}%)")
 
     channels = sorted(ls_sorted["in_channels"].unique())
     plt.xticks(channels, [f"{c} ch" for c in channels])

@@ -178,6 +178,12 @@ def parse_args(argv=None):
         help="Stem channel widths for LatentHead (e.g. 8 16 32 128). Default: [128].",
     )
     parser.add_argument(
+        "--native-width",
+        action="store_true",
+        default=False,
+        help="Set stem width equal to input channels (W = C_in, no 128-channel expansion).",
+    )
+    parser.add_argument(
         "--amp",
         action="store_true",
         default=True,
@@ -392,6 +398,7 @@ def main(argv=None):
         quant_modes=quant_filter,
         stem_channels=args.stem_channels,
         custom_channel_subsets=custom_subsets,
+        native_width=args.native_width,
     ).to(args.device)
 
     total_heads_count = len(container.head_keys)
@@ -559,6 +566,7 @@ def main(argv=None):
             "in_channels": in_channels,
             "stem_channels": stem_ch,
             "num_params": num_params,
+            "native_width": meta.get("native_width", False),
             "bpp": round(bpp, 4),
             "top1_acc": round(top1, 2),
             "top5_acc": round(top5, 2),
@@ -581,6 +589,7 @@ def main(argv=None):
                 "in_channels": spec.num_channels,
                 "stem_channels": stem_ch,
                 "num_params": num_params,
+                "native_width": meta.get("native_width", False),
                 "bpp": round(bpp_z + bpp, 4),
                 "top1_acc": round(top1, 2),
                 "top5_acc": round(top5, 2),
@@ -609,6 +618,8 @@ def main(argv=None):
 
     print("\n[BENCHMARK COMPLETE] Summary of Top-1 Accuracies:")
     display_cols = ["view", "category", "arch", "quant"]
+    if "native_width" in df.columns and df["native_width"].any():
+        display_cols.append("native_width")
     if "stem_channels" in df.columns and df["stem_channels"].dropna().nunique() > 1:
         display_cols.append("stem_channels")
     if "num_params" in df.columns and df["num_params"].nunique() > 1:
