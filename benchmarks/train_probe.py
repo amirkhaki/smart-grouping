@@ -353,7 +353,7 @@ def main(argv=None):
     custom_subsets = None
     if args.least_sparse:
         print("\n[SPARSITY] Calculating channel activation densities across quantized training latents...")
-        densities = compute_channel_densities(cache_file, split="train")
+        densities = compute_channel_densities(h5_path, split="train")
         ranked_channels = rank_channels_by_density(densities)
 
         # Print the detailed density summary table (channel numbers and slice origins)
