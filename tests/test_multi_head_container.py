@@ -80,6 +80,24 @@ class TestMultiHeadContainer(unittest.TestCase):
 
         self.assertTrue(params_w8 < params_w16 < params_w32 < params_w128)
 
+    def test_custom_channel_subsets(self):
+        """Container instantiates heads for custom least-sparse channel subsets."""
+        custom_subsets = {
+            "LS8": [0, 1, 2, 3, 16, 17, 32, 33],
+            "LS16": list(range(16)),
+        }
+        container = MultiHeadClassifierContainer(
+            num_classes=NUM_CLASSES,
+            architectures=["latent_head"],
+            quant_modes=["quantized"],
+            custom_channel_subsets=custom_subsets,
+        )
+        self.assertEqual(len(container.heads), 2)
+        self.assertIn("LS8_latent_head_quantized", container.heads)
+        self.assertIn("LS16_latent_head_quantized", container.heads)
+        self.assertEqual(container.head_metadata["LS8_latent_head_quantized"]["in_channels"], 8)
+        self.assertEqual(container.head_metadata["LS16_latent_head_quantized"]["in_channels"], 16)
+
 
 if __name__ == "__main__":
     unittest.main()

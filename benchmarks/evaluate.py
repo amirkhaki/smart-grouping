@@ -181,3 +181,62 @@ def generate_stem_ablation_plot(
     plt.savefig(out_path)
     plt.close()
     print(f"[PLOT] Generated Stem Width ablation curve: {out_path}")
+
+
+def generate_least_sparse_plot(
+    results_df: pd.DataFrame,
+    out_plot_path: Union[str, Path],
+    title: str = "Least-Sparse Channel Subsets vs. Classification Accuracy",
+):
+    """Plot Top-1 accuracy for dynamically selected least-sparse channel subsets."""
+    ls_df = results_df[results_df["category"] == "least_sparse"].copy()
+    if ls_df.empty:
+        return
+
+    plt.figure(figsize=(9, 5.5), dpi=150)
+    ls_sorted = ls_df.sort_values(by="in_channels")
+
+    plt.plot(
+        ls_sorted["in_channels"],
+        ls_sorted["top1_acc"],
+        color="#2ca02c",
+        marker="o",
+        linewidth=2.2,
+        markersize=9,
+        label="Least-Sparse Channels (Quantized y_hat)",
+    )
+
+    for _, row in ls_sorted.iterrows():
+        plt.annotate(
+            f"{row['view']}: {row['top1_acc']:.1f}%\n({row['in_channels']} ch)",
+            (row["in_channels"], row["top1_acc"]),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+            fontsize=8,
+            fontweight="bold",
+        )
+
+    # Add reference baselines from S0 and C4 if available
+    s0_acc = results_df[(results_df["view"] == "S0") & (results_df["quant"] == "quantized")]["top1_acc"].values
+    if len(s0_acc) > 0:
+        plt.axhline(y=s0_acc[0], color="#ff7f0e", linestyle="--", alpha=0.7, label=f"Native S0 (16 ch: {s0_acc[0]:.1f}%)")
+
+    c4_acc = results_df[(results_df["view"] == "C4") & (results_df["quant"] == "quantized")]["top1_acc"].values
+    if len(c4_acc) > 0:
+        plt.axhline(y=c4_acc[0], color="#1f77b4", linestyle=":", alpha=0.7, label=f"Native C4 (320 ch: {c4_acc[0]:.1f}%)")
+
+    channels = sorted(ls_sorted["in_channels"].unique())
+    plt.xticks(channels, [f"{c} ch" for c in channels])
+    plt.xlabel("Number of Least-Sparse Channels (K)", fontsize=12)
+    plt.ylabel("Top-1 Accuracy (%)", fontsize=12)
+    plt.title(title, fontsize=13, fontweight="bold")
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.legend(loc="lower right", framealpha=0.9)
+    plt.tight_layout()
+
+    out_path = Path(out_plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path)
+    plt.close()
+    print(f"[PLOT] Generated Least-Sparse channel curve: {out_path}")

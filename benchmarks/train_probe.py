@@ -5,6 +5,7 @@ with dynamic per-head early stopping and automatic mixed precision.
 
 import argparse
 import copy
+import json
 import os
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -50,10 +52,17 @@ from benchmarks.config import (
 from benchmarks.datasets.hdf5_dataset import HDF5LatentDataset
 from benchmarks.evaluate import (
     export_master_results,
+    generate_least_sparse_plot,
     generate_pareto_plot,
     generate_stem_ablation_plot,
 )
 from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
+from benchmarks.sparsity import (
+    compute_channel_densities,
+    format_density_summary,
+    get_channel_slice,
+    rank_channels_by_density,
+)
 
 
 def parse_args(argv=None):
@@ -145,6 +154,21 @@ def parse_args(argv=None):
         nargs="+",
         default=None,
         help="Filter slice views (e.g. S0 S4 C4). If omitted, evaluates all 9 views.",
+    )
+    parser.add_argument(
+        "--quant-modes",
+        type=str,
+        nargs="+",
+        default=None,
+        choices=["quantized", "continuous"],
+        help="Filter quantization modes (e.g. quantized). Default: both.",
+    )
+    parser.add_argument(
+        "--least-sparse",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Evaluate top-K least sparse channels (e.g. 8 16 32) instead of standard slice views.",
     )
     parser.add_argument(
         "--stem-channels",
@@ -325,13 +349,49 @@ def main(argv=None):
         persistent_workers=(args.num_workers > 0),
     )
 
-    # 3. Instantiate Multi-Head Container with optional filtering
+    # 3. Handle Least-Sparse Channel Subsets if requested
+    custom_subsets = None
+    if args.least_sparse:
+        print("\n[SPARSITY] Calculating channel activation densities across quantized training latents...")
+        densities = compute_channel_densities(cache_file, split="train")
+        ranked_channels = rank_channels_by_density(densities)
+
+        # Print the detailed density summary table (channel numbers and slice origins)
+        print(format_density_summary(ranked_channels, top_k_list=args.least_sparse))
+
+        # Save sparsity ranking artifacts
+        sparsity_csv = out_dir / "channel_sparsity_ranking.csv"
+        sparsity_json = out_dir / "channel_sparsity_ranking.json"
+        pd.DataFrame(ranked_channels).to_csv(sparsity_csv, index=False)
+        with open(sparsity_json, "w") as f:
+            json.dump(ranked_channels, f, indent=2)
+        print(f"[SPARSITY] Saved channel density ranking to: {sparsity_csv}")
+
+        custom_subsets = {}
+        for k in args.least_sparse:
+            indices = [r["channel"] for r in ranked_channels[:k]]
+            custom_subsets[f"LS{k}"] = indices
+
+    # Filter selections
     arch_filter = None if args.arch == "all" else [args.arch]
+    if args.least_sparse and args.arch == "all":
+        arch_filter = ["latent_head"]
+
+    quant_filter = args.quant_modes
+    if quant_filter is None and args.least_sparse is not None:
+        quant_filter = ["quantized"]  # Default to quantized-only for least-sparse experiments
+
+    views_filter = args.views
+    if args.least_sparse is not None and args.views is None:
+        views_filter = []
+
     container = MultiHeadClassifierContainer(
         num_classes=NUM_CLASSES,
         architectures=arch_filter,
-        views=args.views,
+        views=views_filter,
+        quant_modes=quant_filter,
         stem_channels=args.stem_channels,
+        custom_channel_subsets=custom_subsets,
     ).to(args.device)
 
     total_heads_count = len(container.head_keys)
@@ -464,35 +524,53 @@ def main(argv=None):
     records: List[Dict[str, Any]] = []
     for head_key in raw_container.head_keys:
         meta = raw_container.head_metadata[head_key]
-        spec: SliceSpec = meta["slice_spec"]
+        spec: Optional[SliceSpec] = meta.get("slice_spec")
         arch = meta["arch"]
         quant = meta["quant"]
-        view = spec.name
+        view = meta.get("slice_name", head_key)
+        stem_ch = meta.get("stem_channels")
+        num_params = meta.get("num_params", 0)
+        channel_indices = meta.get("channel_indices")
 
         top1 = (head_correct_top1[head_key] / max(total_test_samples, 1)) * 100.0
         top5 = (head_correct_top5[head_key] / max(total_test_samples, 1)) * 100.0
-        bpp = slice_bpp_map.get(view, 0.0)
 
-        stem_ch = meta.get("stem_channels")
-        num_params = meta.get("num_params", 0)
+        if spec is not None:
+            category = spec.category
+            in_channels = spec.num_channels
+            bpp = slice_bpp_map.get(view, 0.0)
+        else:
+            category = "least_sparse"
+            in_channels = meta.get("in_channels", len(channel_indices) if channel_indices else 0)
+            if channel_indices:
+                bpp = bpp_z + sum(
+                    (slice_bpp_map.get(get_channel_slice(c), 0.0) / max(SLICE_SPECS[get_channel_slice(c)].num_channels, 1))
+                    for c in channel_indices
+                )
+            else:
+                bpp = 0.0
 
-        records.append({
+        rec = {
             "head_key": head_key,
             "view": view,
-            "category": spec.category,
+            "category": category,
             "arch": arch,
             "quant": quant,
-            "in_channels": spec.num_channels,
+            "in_channels": in_channels,
             "stem_channels": stem_ch,
             "num_params": num_params,
             "bpp": round(bpp, 4),
             "top1_acc": round(top1, 2),
             "top5_acc": round(top5, 2),
             "lmbda": lmbda_val,
-        })
+        }
+        if channel_indices is not None:
+            rec["channels"] = ",".join(str(c) for c in channel_indices)
+
+        records.append(rec)
 
         # Also add S0 as cumulative C0 for Pareto plotting consistency
-        if view == "S0":
+        if view == "S0" and spec is not None:
             c0_head_key = f"C0_{arch}_{quant}" if not head_key.startswith("C0") else head_key
             records.append({
                 "head_key": c0_head_key,
@@ -524,6 +602,11 @@ def main(argv=None):
             ablation_plot = out_dir / f"stem_width_ablation_{v}.png"
             generate_stem_ablation_plot(df, ablation_plot, view=v)
 
+    # If least-sparse channels were evaluated, generate least-sparse plot
+    if "least_sparse" in df["category"].values:
+        ls_plot = out_dir / "least_sparse_accuracy.png"
+        generate_least_sparse_plot(df, ls_plot)
+
     print("\n[BENCHMARK COMPLETE] Summary of Top-1 Accuracies:")
     display_cols = ["view", "category", "arch", "quant"]
     if "stem_channels" in df.columns and df["stem_channels"].dropna().nunique() > 1:
@@ -531,6 +614,8 @@ def main(argv=None):
     if "num_params" in df.columns and df["num_params"].nunique() > 1:
         display_cols.append("num_params")
     display_cols.extend(["bpp", "top1_acc"])
+    if "channels" in df.columns and df["channels"].dropna().count() > 0:
+        display_cols.append("channels")
     print(df[display_cols].to_string())
 
 
