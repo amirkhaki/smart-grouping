@@ -1,6 +1,10 @@
-"""Tier-2 Entrypoint: Parallel joint training of all 36 probe configurations."""
+"""Tier-2 Entrypoint: Parallel joint training of all 36 probe configurations
+
+with dynamic per-head early stopping and automatic mixed precision.
+"""
 
 import argparse
+import copy
 import os
 from pathlib import Path
 import sys
@@ -30,7 +34,7 @@ from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Tier-2 Evaluator: Train all 36 probe heads in parallel on cached ELIC latents."
+        description="Tier-2 Evaluator: Train probe heads in parallel on cached ELIC latents with per-head early stopping."
     )
     parser.add_argument(
         "--cache-dir",
@@ -73,6 +77,50 @@ def parse_args(argv=None):
         type=int,
         default=4,
         help="DataLoader worker count (default: 4)",
+    )
+    parser.add_argument(
+        "--early-stopping",
+        action="store_true",
+        default=True,
+        help="Enable dynamic per-head early stopping (default: True)",
+    )
+    parser.add_argument(
+        "--no-early-stopping",
+        dest="early_stopping",
+        action="store_false",
+        help="Disable dynamic early stopping (run all epochs for all heads)",
+    )
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=3,
+        help="Checks without Top-1 accuracy gain before freezing a head (default: 3)",
+    )
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=2,
+        help="Epoch frequency for checking validation convergence (default: 2)",
+    )
+    parser.add_argument(
+        "--min-epochs",
+        type=int,
+        default=10,
+        help="Minimum warmup epochs before any head can be frozen (default: 10)",
+    )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="all",
+        choices=["all", "linear_probe", "latent_head"],
+        help="Filter probe architecture (default: all)",
+    )
+    parser.add_argument(
+        "--views",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Filter slice views (e.g. S0 S4 C4). If omitted, evaluates all 9 views.",
     )
     parser.add_argument(
         "--amp",
@@ -166,6 +214,43 @@ def calculate_slice_bitrates(
     return slice_bpp, bpp_z
 
 
+def evaluate_active_heads(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
+    use_cuda: bool,
+    use_amp: bool,
+) -> Dict[str, float]:
+    """Fast validation pass measuring Top-1 accuracy for currently active heads."""
+    model.eval()
+    raw = model.module if isinstance(model, nn.DataParallel) else model
+    target_keys = list(raw.active_head_keys)
+    if not target_keys:
+        return {}
+
+    correct_counts = {k: 0 for k in target_keys}
+    total = 0
+
+    with torch.no_grad():
+        for batch in loader:
+            y_q = batch["y_quantized"].to(device, non_blocking=use_cuda)
+            y_c = batch["y_continuous"].to(device, non_blocking=use_cuda)
+            labels = batch["label"].to(device, non_blocking=use_cuda)
+            B = labels.size(0)
+            total += B
+
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits_dict = model(y_q, y_c)
+
+            for head_key in target_keys:
+                if head_key in logits_dict:
+                    pred = logits_dict[head_key].argmax(dim=1)
+                    correct_counts[head_key] += (pred == labels).sum().item()
+
+    model.train()
+    return {k: (correct_counts[k] / max(total, 1)) * 100.0 for k in target_keys}
+
+
 def main(argv=None):
     args = parse_args(argv)
     out_dir = Path(args.out_dir)
@@ -208,9 +293,16 @@ def main(argv=None):
         persistent_workers=(args.num_workers > 0),
     )
 
-    # 3. Instantiate Multi-Head Container
-    print(f"[INIT] Instantiating MultiHeadClassifierContainer (36 heads) on {args.device}...")
-    container = MultiHeadClassifierContainer(num_classes=NUM_CLASSES).to(args.device)
+    # 3. Instantiate Multi-Head Container with optional filtering
+    arch_filter = None if args.arch == "all" else [args.arch]
+    container = MultiHeadClassifierContainer(
+        num_classes=NUM_CLASSES,
+        architectures=arch_filter,
+        views=args.views,
+    ).to(args.device)
+
+    total_heads_count = len(container.head_keys)
+    print(f"[INIT] Instantiating MultiHeadClassifierContainer ({total_heads_count} heads) on {args.device}...")
 
     # DataParallel wrapper for 2x Tesla T4 GPUs
     if use_cuda and torch.cuda.device_count() > 1:
@@ -219,24 +311,36 @@ def main(argv=None):
     else:
         model = container
 
+    raw_container: MultiHeadClassifierContainer = model.module if isinstance(model, nn.DataParallel) else model
+
     # Optimizer, Scaler, and Cosine Annealing Scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # 4. Training Loop
+    # 4. State tracking for dynamic early stopping & per-head best checkpoints
+    best_top1: Dict[str, float] = {k: -1.0 for k in raw_container.head_keys}
+    best_weights: Dict[str, Dict[str, torch.Tensor]] = {
+        k: {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
+        for k in raw_container.head_keys
+    }
+    patience_counter: Dict[str, int] = {k: 0 for k in raw_container.head_keys}
+
     t_start = time.time()
     amp_status = "Enabled (FP16)" if use_amp else "Disabled (FP32)"
-    print(f"\n[TRAIN] Beginning {epochs} epochs of multi-head training (Batch Size: {args.batch_size}, AMP: {amp_status})...")
+    es_status = f"Enabled (patience={args.patience}, eval_every={args.eval_every})" if args.early_stopping else "Disabled"
+    print(f"\n[TRAIN] Beginning {epochs} epochs of training (Batch Size: {args.batch_size}, AMP: {amp_status}, Early Stopping: {es_status})...")
 
-    raw_container = model.module if isinstance(model, nn.DataParallel) else model
-
+    # Training Loop
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
         num_batches = 0
 
         for batch in train_loader:
+            if raw_container.all_frozen():
+                break
+
             y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda)
             y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda)
             labels = batch["label"].to(args.device, non_blocking=use_cuda)
@@ -255,14 +359,41 @@ def main(argv=None):
 
         scheduler.step()
         avg_loss = running_loss / max(num_batches, 1)
+
+        active_count = len(raw_container.active_head_keys)
         if epoch % 5 == 0 or epoch == epochs or epoch == 1:
-            print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {avg_loss:.4f} - LR: {scheduler.get_last_lr()[0]:.6f}")
+            print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {avg_loss:.4f} - Active Heads: {active_count}/{total_heads_count} - LR: {scheduler.get_last_lr()[0]:.6f}")
+
+        # Check early stopping / validation convergence periodically
+        if args.early_stopping and (epoch >= args.min_epochs) and (epoch % args.eval_every == 0):
+            current_accs = evaluate_active_heads(model, test_loader, args.device, use_cuda, use_amp)
+            for k in list(raw_container.active_head_keys):
+                cur_acc = current_accs.get(k, 0.0)
+                if cur_acc > best_top1[k]:
+                    best_top1[k] = cur_acc
+                    best_weights[k] = {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
+                    patience_counter[k] = 0
+                else:
+                    patience_counter[k] += 1
+                    if patience_counter[k] >= args.patience:
+                        raw_container.freeze_head(k)
+                        print(f"    [FREEZE] Head '{k}' converged (Peak Top-1: {best_top1[k]:.2f}%). Freezing head to save compute.")
+
+            if raw_container.all_frozen():
+                print(f"\n[EARLY STOP] All {total_heads_count} heads converged at epoch {epoch}! Exiting training early.")
+                break
 
     train_time = time.time() - t_start
     print(f"[TRAIN] Finished training in {train_time:.1f}s ({train_time / 60:.2f} min)")
 
-    # 5. Evaluation Loop on Test Split
-    print("\n[EVAL] Evaluating all 36 heads on test split...")
+    # 5. Restore each head's peak weights for final benchmark scoring
+    print("\n[RESTORE] Restoring peak weights achieved across training for each head...")
+    for k in raw_container.head_keys:
+        if k in best_weights and best_weights[k]:
+            raw_container.heads[k].load_state_dict(best_weights[k])
+
+    # 6. Final Comprehensive Test Evaluation
+    print(f"\n[EVAL] Running final test evaluation across all {total_heads_count} heads...")
     model.eval()
 
     head_correct_top1: Dict[str, int] = {k: 0 for k in raw_container.head_keys}
@@ -280,7 +411,8 @@ def main(argv=None):
 
             all_bitrates_list.append(batch["bitrates_bpp"].numpy())
             with torch.cuda.amp.autocast(enabled=use_amp):
-                logits_dict = model(y_q, y_c)
+                # Pass all_heads=True to evaluate all heads
+                logits_dict = raw_container(y_q, y_c, all_heads=True)
 
             for head_key, logits in logits_dict.items():
                 _, pred = logits.topk(5, 1, True, True)
@@ -294,7 +426,7 @@ def main(argv=None):
     slice_bpp_map, bpp_z = calculate_slice_bitrates(test_bitrates)
     lmbda_val = train_dataset.attrs.get("lambda", 0.032)
 
-    # 6. Format Results Table
+    # 7. Format Results Table
     records: List[Dict[str, Any]] = []
     for head_key in raw_container.head_keys:
         meta = raw_container.head_metadata[head_key]
@@ -335,7 +467,7 @@ def main(argv=None):
                 "lmbda": lmbda_val,
             })
 
-    # 7. Serialize Metrics and Plots
+    # 8. Serialize Metrics and Plots
     out_csv = out_dir / "master_results.csv"
     out_json = out_dir / "metrics.json"
     out_plot = out_dir / "pareto_curve.png"
