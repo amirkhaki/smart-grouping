@@ -25,4 +25,4 @@ Neural network building blocks and custom layers for learned image compression m
 - `[layers.py:CheckboardMaskedConv2d.forward]`: In-place mutation of `self.weight.data` via multiplication with `self.mask`.
 
 ## Verification
-- Run: `<test-command>`
+- Run: `pytest`

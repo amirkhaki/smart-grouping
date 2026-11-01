@@ -18,4 +18,4 @@ Dataset loader utilities for image compression training and evaluation. Provides
 - `[utils.py:ImageFolder.__getitem__]`: Reads image files from disk via `PIL.Image.open`.
 
 ## Verification
-- Run: `<test-command>`
+- Run: `pytest`

@@ -88,7 +88,9 @@ python Inference.py --dataset ./dataset/Kodak --output_path ELIC_0450_ft_3980_Pl
 - `[updata.py:main]`: Updates CDF tables of trained models and serializes updated checkpoints.
 
 ## Subdirectories & System Boundaries
-- `ELICUtilis`: [ELICUtilis](./ELICUtilis/README.md) - Core utility package grouping custom neural layers, dataset loaders, and checkpoint helpers.
+- benchmarks: [benchmarks](./benchmarks/README.md) - Benchmark execution suite for evaluating representations learned by ELIC models on Caltech-256 downstream classification, including latent caching to HDF5, multi-head probe training, and Rate-Accuracy Pareto visualization.
+- ci: [ci](./ci/README.md) - Continuous integration and Kaggle script kernel bootstrap harness for remote GPU training and evaluation workflows.
+- ELICUtilis: [ELICUtilis](./ELICUtilis/README.md) - Core utility subsystem grouping custom neural layers, dataset loaders, and model checkpoint management helpers.
 
 ## Global Invariants
 - `[Network.py:TestModel]`: Input images must have 3 RGB channels with spatial dimensions divisible by downsampling factor 64 (or padded using `Inference.py` padding logic).
@@ -101,4 +103,4 @@ python Inference.py --dataset ./dataset/Kodak --output_path ELIC_0450_ft_3980_Pl
 - `[updata.py:main]`: Overwrites or creates updated PyTorch checkpoint files.
 
 ## System Verification
-- Run: `<test-command>`
+- Run: `pytest`

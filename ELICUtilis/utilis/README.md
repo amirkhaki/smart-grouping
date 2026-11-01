@@ -15,4 +15,4 @@ Filesystem and model checkpoint utility helpers supporting training checkpoint l
 - `[utilis.py:load_checkpoint]`: Reads binary file contents from disk via `torch.load`.
 
 ## Verification
-- Run: `<test-command>`
+- Run: `pytest`
