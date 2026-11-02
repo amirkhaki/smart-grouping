@@ -51,6 +51,26 @@ class TestMultiHeadContainer(unittest.TestCase):
                         f"Parameter {name} in head {head_key} did not receive gradients!",
                     )
 
+    def test_loss_computation_with_label_smoothing(self):
+        """Total loss computation supports label smoothing regularization."""
+        container = MultiHeadClassifierContainer(
+            num_classes=NUM_CLASSES,
+            views=["C4"],
+            architectures=["latent_head"],
+            quant_modes=["quantized"],
+        )
+        B = 2
+        y_q = torch.randn(B, 320, 16, 16)
+        y_c = torch.randn(B, 320, 16, 16)
+        targets = torch.tensor([0, 1], dtype=torch.long)
+
+        logits_dict = container(y_q, y_c)
+        loss_standard, _ = container.compute_loss(logits_dict, targets, label_smoothing=0.0)
+        loss_smoothed, _ = container.compute_loss(logits_dict, targets, label_smoothing=0.1)
+
+        self.assertTrue(loss_smoothed.requires_grad)
+        self.assertNotEqual(loss_standard.item(), loss_smoothed.item())
+
     def test_stem_channels_ablation(self):
         """Container instantiates specified stem channel heads for ablation studies."""
         container = MultiHeadClassifierContainer(

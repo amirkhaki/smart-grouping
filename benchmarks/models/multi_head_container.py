@@ -293,12 +293,14 @@ class MultiHeadClassifierContainer(nn.Module):
         self,
         logits_dict: Dict[str, torch.Tensor],
         targets: torch.Tensor,
+        label_smoothing: float = 0.0,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Compute summed cross-entropy loss across active heads.
 
         Args:
             logits_dict: Dictionary mapping head_key -> logits (B, num_classes)
             targets: Class index tensor of shape (B,)
+            label_smoothing: Float in [0.0, 1.0) specifying label smoothing regularizer.
 
         Returns:
             total_loss: Scalar PyTorch tensor for backpropagation
@@ -311,7 +313,10 @@ class MultiHeadClassifierContainer(nn.Module):
         per_head_loss: Dict[str, float] = {}
 
         for head_key, logits in logits_dict.items():
-            loss = F.cross_entropy(logits, targets)
+            if label_smoothing > 0.0:
+                loss = F.cross_entropy(logits, targets, label_smoothing=label_smoothing)
+            else:
+                loss = F.cross_entropy(logits, targets)
             total_loss = total_loss + loss
             per_head_loss[head_key] = loss.item()
 
