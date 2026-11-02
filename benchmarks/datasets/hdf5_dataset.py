@@ -68,22 +68,22 @@ class HDF5LatentDataset(Dataset):
         if self.in_memory:
             cache_key = (str(self.h5_path.resolve()), load_quantized, load_continuous)
             if cache_key in HDF5LatentDataset._archive_cache:
-                raw_q, raw_c, raw_labels, raw_bitrates = HDF5LatentDataset._archive_cache[cache_key]
+                shared = HDF5LatentDataset._archive_cache[cache_key]
             else:
                 with h5py.File(str(self.h5_path), mode="r") as f:
                     # Single contiguous C-level sequential read (avoids slow point selection over FUSE)
-                    raw_q = f["latents_quantized"][:] if load_quantized else None
-                    raw_c = f["latents_continuous"][:] if load_continuous else None
-                    raw_labels = f["labels"][:]
-                    raw_bitrates = f["bitrates_bpp"][:]
-                HDF5LatentDataset._archive_cache[cache_key] = (raw_q, raw_c, raw_labels, raw_bitrates)
+                    shared = {
+                        "q": torch.from_numpy(f["latents_quantized"][:]) if load_quantized else None,
+                        "c": torch.from_numpy(f["latents_continuous"][:]) if load_continuous else None,
+                        "labels": torch.from_numpy(f["labels"][:]).long(),
+                        "bitrates": torch.from_numpy(f["bitrates_bpp"][:]).float(),
+                    }
+                HDF5LatentDataset._archive_cache[cache_key] = shared
 
-            if raw_q is not None:
-                self._latents_q = torch.from_numpy(raw_q[self.indices].copy())
-            if raw_c is not None:
-                self._latents_c = torch.from_numpy(raw_c[self.indices].copy())
-            self._labels = torch.from_numpy(raw_labels[self.indices].copy()).long()
-            self._bitrates = torch.from_numpy(raw_bitrates[self.indices].copy()).float()
+            self._latents_q = shared.get("q")
+            self._latents_c = shared.get("c")
+            self._labels = shared["labels"]
+            self._bitrates = shared["bitrates"]
 
     def _get_handle(self) -> h5py.File:
         """Lazily obtain worker-local HDF5 file handle for disk streaming."""
@@ -92,17 +92,17 @@ class HDF5LatentDataset(Dataset):
         return self._h5_file
 
     def __len__(self) -> int:
-        return self.num_samples
+        return len(self.indices)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Fetch sample by index, casting float16 latents to float32 tensors."""
         real_idx = int(self.indices[idx])
 
         if self.in_memory:
-            y_q = self._latents_q[idx].float() if self._latents_q is not None else torch.empty(0)
-            y_c = self._latents_c[idx].float() if self._latents_c is not None else torch.empty(0)
-            label = int(self._labels[idx].item())
-            bitrates = self._bitrates[idx]
+            y_q = self._latents_q[real_idx].float() if self._latents_q is not None else torch.empty(0)
+            y_c = self._latents_c[real_idx].float() if self._latents_c is not None else torch.empty(0)
+            label = int(self._labels[real_idx].item())
+            bitrates = self._bitrates[real_idx]
         else:
             h5 = self._get_handle()
             y_q = torch.from_numpy(h5["latents_quantized"][real_idx]).float() if self.load_quantized else torch.empty(0)

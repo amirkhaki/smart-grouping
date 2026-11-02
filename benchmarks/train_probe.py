@@ -489,8 +489,6 @@ def main(argv=None):
         load_continuous=load_continuous,
         load_quantized=load_quantized,
     )
-    if in_mem:
-        HDF5LatentDataset.clear_cache()
 
     epochs = args.epochs
     if args.dry_run:

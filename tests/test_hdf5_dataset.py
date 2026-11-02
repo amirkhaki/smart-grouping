@@ -64,6 +64,38 @@ class TestHDF5Dataset(unittest.TestCase):
         self.assertTrue(len(batches) > 0)
         self.assertEqual(batches[0]["y_quantized"].shape[1:], (320, 16, 16))
 
+    def test_in_memory_loading_matches_disk_streaming(self):
+        """In-memory preloading yields identical shapes, labels, and values as disk streaming."""
+        train_disk = HDF5LatentDataset(self.h5_path, split="train", in_memory=False)
+        test_disk = HDF5LatentDataset(self.h5_path, split="test", in_memory=False)
+
+        train_mem = HDF5LatentDataset(self.h5_path, split="train", in_memory=True)
+        test_mem = HDF5LatentDataset(self.h5_path, split="test", in_memory=True)
+
+        self.assertEqual(len(train_mem), len(train_disk))
+        self.assertEqual(len(test_mem), len(test_disk))
+
+        # Check all train samples match exactly
+        for i in range(len(train_mem)):
+            d_sample = train_disk[i]
+            m_sample = train_mem[i]
+            self.assertEqual(d_sample["label"], m_sample["label"])
+            self.assertEqual(d_sample["index"], m_sample["index"])
+            torch.testing.assert_close(d_sample["y_quantized"], m_sample["y_quantized"])
+            torch.testing.assert_close(d_sample["bitrates_bpp"], m_sample["bitrates_bpp"])
+
+        # Check all test samples match exactly
+        for i in range(len(test_mem)):
+            d_sample = test_disk[i]
+            m_sample = test_mem[i]
+            self.assertEqual(d_sample["label"], m_sample["label"])
+            self.assertEqual(d_sample["index"], m_sample["index"])
+            torch.testing.assert_close(d_sample["y_quantized"], m_sample["y_quantized"])
+
+        # Test cache clearing
+        HDF5LatentDataset.clear_cache()
+        self.assertEqual(len(HDF5LatentDataset._archive_cache), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
