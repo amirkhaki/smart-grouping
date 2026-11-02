@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -240,30 +241,61 @@ def parse_args(argv=None):
 
 
 def find_h5_cache(cache_hint: Optional[str] = None) -> Path:
-    """Locate caltech256_elic_latents.h5 across provided path, env vars, and standard Kaggle mounts."""
-    candidates = []
+    """Locate caltech256_elic_latents.h5 across provided path, env vars, and standard Kaggle mounts.
+    
+    Uses direct O(1) path lookups first to avoid slow recursive scanning on FUSE virtual mounts.
+    """
+    # 1. Direct path / hint checks (instant O(1) checks)
+    direct_candidates = []
     if cache_hint:
         p = Path(cache_hint)
-        if p.is_file():
+        if p.is_file() and p.stat().st_size > 1024 * 1024:
             return p
         if p.is_dir():
-            candidates.append(p / DEFAULT_CACHE_FILENAME)
-            candidates.extend(list(p.glob(f"**/{DEFAULT_CACHE_FILENAME}")))
+            direct_candidates.append(p / DEFAULT_CACHE_FILENAME)
 
-    # Standard search directories
-    search_dirs = [
+    env_hint = os.environ.get("TIER1_CACHE_DIR")
+    if env_hint:
+        p = Path(env_hint)
+        if p.is_file() and p.stat().st_size > 1024 * 1024:
+            return p
+        if p.is_dir():
+            direct_candidates.append(p / DEFAULT_CACHE_FILENAME)
+
+    # Standard Kaggle mount points and working dirs (instant direct checks)
+    direct_candidates.extend([
+        Path("/kaggle/input/smart-grouping-tier1-cache") / DEFAULT_CACHE_FILENAME,
+        Path("/kaggle/input/notebooks/amirrkhaki/smart-grouping-tier1-cache") / DEFAULT_CACHE_FILENAME,
+        Path("/kaggle/input") / DEFAULT_CACHE_FILENAME,
+        Path("/kaggle/working") / DEFAULT_CACHE_FILENAME,
+        Path(".") / DEFAULT_CACHE_FILENAME,
+    ])
+
+    for cand in direct_candidates:
+        if cand.is_file() and cand.stat().st_size > 1024 * 1024:
+            return cand
+
+    # 2. Fast shallow breadth-first search (depth <= 3) returning immediately upon first match
+    search_roots = [
         Path("/kaggle/input"),
         Path("/kaggle/working"),
         Path("."),
     ]
-    for d in search_dirs:
-        if d.is_dir():
-            candidates.append(d / DEFAULT_CACHE_FILENAME)
-            candidates.extend(list(d.glob(f"**/{DEFAULT_CACHE_FILENAME}")))
-
-    for cand in candidates:
-        if cand.is_file() and cand.stat().st_size > 1024 * 1024:
-            return cand
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        # Shallow check depth 1: root/*/<filename>
+        for sub in root.glob(f"*/{DEFAULT_CACHE_FILENAME}"):
+            if sub.is_file() and sub.stat().st_size > 1024 * 1024:
+                return sub
+        # Shallow check depth 2: root/*/*/<filename>
+        for sub in root.glob(f"*/*/{DEFAULT_CACHE_FILENAME}"):
+            if sub.is_file() and sub.stat().st_size > 1024 * 1024:
+                return sub
+        # Shallow check depth 3: root/*/*/*/<filename>
+        for sub in root.glob(f"*/*/*/{DEFAULT_CACHE_FILENAME}"):
+            if sub.is_file() and sub.stat().st_size > 1024 * 1024:
+                return sub
 
     raise FileNotFoundError(
         f"Could not locate {DEFAULT_CACHE_FILENAME} in {cache_hint} or /kaggle/input. "
