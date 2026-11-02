@@ -41,6 +41,20 @@ class TestProbeModels(unittest.TestCase):
             logits = head(x)
             self.assertEqual(logits.shape, (4, NUM_CLASSES))
 
+    def test_preact_block_and_head_spatial_dropout(self):
+        """PreActBlock and LatentHead support spatial dropout in train mode."""
+        block = PreActBlock(in_ch=128, out_ch=128, stride=1, spatial_dropout=0.2)
+        block.train()
+        x = torch.randn(2, 128, 16, 16)
+        out = block(x)
+        self.assertEqual(out.shape, (2, 128, 16, 16))
+
+        head = LatentHead(in_channels=320, stem_channels=128, num_classes=NUM_CLASSES, spatial_dropout=0.2)
+        head.train()
+        x_head = torch.randn(2, 320, 16, 16)
+        logits = head(x_head)
+        self.assertEqual(logits.shape, (2, NUM_CLASSES))
+
 
 if __name__ == "__main__":
     unittest.main()

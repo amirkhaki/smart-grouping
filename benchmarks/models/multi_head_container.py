@@ -33,10 +33,12 @@ class MultiHeadClassifierContainer(nn.Module):
         stem_channels: Optional[Union[int, List[int]]] = None,
         custom_channel_subsets: Optional[Dict[str, List[int]]] = None,
         native_width: bool = False,
+        spatial_dropout: float = 0.0,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.native_width = native_width
+        self.spatial_dropout = spatial_dropout
         self.heads = nn.ModuleDict()
         self.head_metadata: Dict[str, Dict[str, Any]] = {}
 
@@ -75,7 +77,7 @@ class MultiHeadClassifierContainer(nn.Module):
                         elif arch.startswith("latent_head_w"):
                             stem_w = int(arch.split("_w")[-1])
                             head_key = f"{subset_name}_{arch}_{quant}"
-                            head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                            head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                             self.heads[head_key] = head
                             self.head_metadata[head_key] = {
                                 "slice_name": subset_name,
@@ -87,6 +89,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                 "in_channels": in_ch,
                                 "stem_channels": stem_w,
                                 "native_width": False,
+                                "spatial_dropout": spatial_dropout,
                                 "num_params": sum(p.numel() for p in head.parameters()),
                             }
                         elif arch == "latent_head":
@@ -94,7 +97,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                 stem_w = in_ch
                                 head_key = f"{subset_name}_{arch}_native_{quant}"
                                 arch_label = "latent_head_native"
-                                head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                                head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                                 self.heads[head_key] = head
                                 self.head_metadata[head_key] = {
                                     "slice_name": subset_name,
@@ -106,6 +109,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                     "in_channels": in_ch,
                                     "stem_channels": stem_w,
                                     "native_width": True,
+                                    "spatial_dropout": spatial_dropout,
                                     "num_params": sum(p.numel() for p in head.parameters()),
                                 }
                             else:
@@ -117,7 +121,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                         head_key = f"{subset_name}_{arch}_w{stem_w}_{quant}"
                                         arch_label = f"latent_head_w{stem_w}"
 
-                                    head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                                    head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                                     self.heads[head_key] = head
                                     self.head_metadata[head_key] = {
                                         "slice_name": subset_name,
@@ -129,6 +133,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                         "in_channels": in_ch,
                                         "stem_channels": stem_w,
                                         "native_width": False,
+                                        "spatial_dropout": spatial_dropout,
                                         "num_params": sum(p.numel() for p in head.parameters()),
                                     }
 
@@ -168,7 +173,7 @@ class MultiHeadClassifierContainer(nn.Module):
                         # Specific stem width requested via architecture name
                         stem_w = int(arch.split("_w")[-1])
                         head_key = f"{slice_name}_{arch}_{quant}"
-                        head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                        head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                         self.heads[head_key] = head
                         self.head_metadata[head_key] = {
                             "slice_name": slice_name,
@@ -180,6 +185,7 @@ class MultiHeadClassifierContainer(nn.Module):
                             "in_channels": in_ch,
                             "stem_channels": stem_w,
                             "native_width": False,
+                            "spatial_dropout": spatial_dropout,
                             "num_params": sum(p.numel() for p in head.parameters()),
                         }
                     elif arch == "latent_head":
@@ -187,7 +193,7 @@ class MultiHeadClassifierContainer(nn.Module):
                             stem_w = in_ch
                             head_key = f"{slice_name}_{arch}_native_{quant}"
                             arch_label = "latent_head_native"
-                            head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                            head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                             self.heads[head_key] = head
                             self.head_metadata[head_key] = {
                                 "slice_name": slice_name,
@@ -199,6 +205,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                 "in_channels": in_ch,
                                 "stem_channels": stem_w,
                                 "native_width": True,
+                                "spatial_dropout": spatial_dropout,
                                 "num_params": sum(p.numel() for p in head.parameters()),
                             }
                         else:
@@ -210,7 +217,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                     head_key = f"{slice_name}_{arch}_w{stem_w}_{quant}"
                                     arch_label = f"latent_head_w{stem_w}"
 
-                                head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes)
+                                head = LatentHead(in_channels=in_ch, stem_channels=stem_w, num_classes=num_classes, spatial_dropout=spatial_dropout)
                                 self.heads[head_key] = head
                                 self.head_metadata[head_key] = {
                                     "slice_name": slice_name,
@@ -222,6 +229,7 @@ class MultiHeadClassifierContainer(nn.Module):
                                     "in_channels": in_ch,
                                     "stem_channels": stem_w,
                                     "native_width": False,
+                                    "spatial_dropout": spatial_dropout,
                                     "num_params": sum(p.numel() for p in head.parameters()),
                                 }
                     else:

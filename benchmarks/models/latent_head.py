@@ -8,13 +8,14 @@ from benchmarks.config import DEFAULT_DROPOUT, LATENT_HEAD_STEM_CHANNELS, NUM_CL
 
 
 class PreActBlock(nn.Module):
-    """Pre-activation Residual Block with optional shortcut projection."""
+    """Pre-activation Residual Block with optional shortcut projection and 2D spatial dropout."""
 
-    def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1, spatial_dropout: float = 0.0):
         super().__init__()
         self.b1 = nn.BatchNorm2d(in_ch, eps=1e-5)
         self.c1 = nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, bias=False)
         self.b2 = nn.BatchNorm2d(out_ch, eps=1e-5)
+        self.drop = nn.Dropout2d(p=spatial_dropout) if spatial_dropout > 0.0 else nn.Identity()
         self.c2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False)
         self.shortcut = (
             nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=stride, bias=False)
@@ -25,7 +26,8 @@ class PreActBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         o = F.relu(self.b1(x))
         sc = self.shortcut(o if isinstance(self.shortcut, nn.Conv2d) else x)
-        return self.c2(F.relu(self.b2(self.c1(o)))) + sc
+        h = self.drop(F.relu(self.b2(self.c1(o))))
+        return self.c2(h) + sc
 
 
 class LatentHead(nn.Module):
@@ -35,9 +37,9 @@ class LatentHead(nn.Module):
       Input (B, C_in, 16, 16)
       -> Stem: Conv2d(C_in, 128, kernel=1, bias=False) -> BatchNorm2d(128) -> ReLU()
       -> Body:
-           PreActBlock(128, 128, stride=1)   (16x16)
-           PreActBlock(128, 128, stride=1)   (16x16)
-           PreActBlock(128, 128, stride=2)   (8x8, strided downsample)
+           PreActBlock(128, 128, stride=1, spatial_dropout)   (16x16)
+           PreActBlock(128, 128, stride=1, spatial_dropout)   (16x16)
+           PreActBlock(128, 128, stride=2, spatial_dropout)   (8x8, strided downsample)
       -> Neck: BatchNorm2d(128) -> ReLU()
       -> Head:
            AdaptiveAvgPool2d((1, 1))
@@ -52,11 +54,13 @@ class LatentHead(nn.Module):
         stem_channels: int = LATENT_HEAD_STEM_CHANNELS,
         num_classes: int = NUM_CLASSES,
         dropout: float = DEFAULT_DROPOUT,
+        spatial_dropout: float = 0.0,
     ):
         super().__init__()
         self.in_channels = in_channels
         self.stem_channels = stem_channels
         self.num_classes = num_classes
+        self.spatial_dropout = spatial_dropout
 
         # 1. Stem (normalizes arbitrary slice channel counts to stem_channels)
         self.stem = nn.Sequential(
@@ -65,11 +69,11 @@ class LatentHead(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # 2. Residual Body
+        # 2. Residual Body with optional 2D Spatial Dropout
         self.body = nn.Sequential(
-            PreActBlock(stem_channels, stem_channels, stride=1),
-            PreActBlock(stem_channels, stem_channels, stride=1),
-            PreActBlock(stem_channels, stem_channels, stride=2),
+            PreActBlock(stem_channels, stem_channels, stride=1, spatial_dropout=spatial_dropout),
+            PreActBlock(stem_channels, stem_channels, stride=1, spatial_dropout=spatial_dropout),
+            PreActBlock(stem_channels, stem_channels, stride=2, spatial_dropout=spatial_dropout),
         )
 
         # 3. Neck

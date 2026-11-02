@@ -15,6 +15,15 @@ class HDF5LatentDataset(Dataset):
     and casting on-the-fly to float32. Multi-worker safe via lazy file opening.
     """
 
+    _archive_cache: Dict[Any, Any] = {}
+
+    @classmethod
+    def clear_cache(cls):
+        """Free shared archive raw buffers from memory."""
+        cls._archive_cache.clear()
+        import gc
+        gc.collect()
+
     def __init__(
         self,
         h5_path: Union[str, Path],
@@ -57,13 +66,24 @@ class HDF5LatentDataset(Dataset):
         self._bitrates: Optional[torch.Tensor] = None
 
         if self.in_memory:
-            with h5py.File(str(self.h5_path), mode="r") as f:
-                if load_quantized:
-                    self._latents_q = torch.from_numpy(f["latents_quantized"][self.indices])
-                if load_continuous:
-                    self._latents_c = torch.from_numpy(f["latents_continuous"][self.indices])
-                self._labels = torch.from_numpy(f["labels"][self.indices]).long()
-                self._bitrates = torch.from_numpy(f["bitrates_bpp"][self.indices]).float()
+            cache_key = (str(self.h5_path.resolve()), load_quantized, load_continuous)
+            if cache_key in HDF5LatentDataset._archive_cache:
+                raw_q, raw_c, raw_labels, raw_bitrates = HDF5LatentDataset._archive_cache[cache_key]
+            else:
+                with h5py.File(str(self.h5_path), mode="r") as f:
+                    # Single contiguous C-level sequential read (avoids slow point selection over FUSE)
+                    raw_q = f["latents_quantized"][:] if load_quantized else None
+                    raw_c = f["latents_continuous"][:] if load_continuous else None
+                    raw_labels = f["labels"][:]
+                    raw_bitrates = f["bitrates_bpp"][:]
+                HDF5LatentDataset._archive_cache[cache_key] = (raw_q, raw_c, raw_labels, raw_bitrates)
+
+            if raw_q is not None:
+                self._latents_q = torch.from_numpy(raw_q[self.indices].copy())
+            if raw_c is not None:
+                self._latents_c = torch.from_numpy(raw_c[self.indices].copy())
+            self._labels = torch.from_numpy(raw_labels[self.indices].copy()).long()
+            self._bitrates = torch.from_numpy(raw_bitrates[self.indices].copy()).float()
 
     def _get_handle(self) -> h5py.File:
         """Lazily obtain worker-local HDF5 file handle for disk streaming."""

@@ -243,6 +243,12 @@ def parse_args(argv=None):
         default=0.0,
         help="Label smoothing factor epsilon in [0.0, 1.0) for cross-entropy loss (default: 0.0).",
     )
+    parser.add_argument(
+        "--spatial-dropout",
+        type=float,
+        default=0.0,
+        help="2D Spatial Dropout rate for PreAct residual blocks (default: 0.0).",
+    )
     return parser.parse_args(argv)
 
 
@@ -483,6 +489,8 @@ def main(argv=None):
         load_continuous=load_continuous,
         load_quantized=load_quantized,
     )
+    if in_mem:
+        HDF5LatentDataset.clear_cache()
 
     epochs = args.epochs
     if args.dry_run:
@@ -523,6 +531,7 @@ def main(argv=None):
         stem_channels=args.stem_channels,
         custom_channel_subsets=custom_subsets,
         native_width=args.native_width,
+        spatial_dropout=args.spatial_dropout,
     ).to(args.device)
 
     total_heads_count = len(container.head_keys)
@@ -566,7 +575,8 @@ def main(argv=None):
     es_status = f"Enabled (patience={args.patience}, eval_every={args.eval_every})" if args.early_stopping else "Disabled"
     in_mem_status = "Enabled (RAM Preloaded)" if in_mem else "Disabled (Disk Streaming)"
     ls_status = f"Enabled (eps={args.label_smoothing})" if args.label_smoothing > 0.0 else "Disabled"
-    print(f"\n[TRAIN] Beginning {epochs} epochs of training (Batch Size: {args.batch_size}, In-Memory: {in_mem_status}, AMP: {amp_status}, Label Smoothing: {ls_status}, Early Stopping: {es_status})...")
+    sd_status = f"Enabled (p={args.spatial_dropout})" if args.spatial_dropout > 0.0 else "Disabled"
+    print(f"\n[TRAIN] Beginning {epochs} epochs of training (Batch Size: {args.batch_size}, In-Memory: {in_mem_status}, AMP: {amp_status}, Label Smoothing: {ls_status}, Spatial Dropout: {sd_status}, Early Stopping: {es_status})...")
 
     # Training Loop
     for epoch in range(1, epochs + 1):
@@ -833,6 +843,7 @@ def main(argv=None):
             "num_params": num_params,
             "native_width": meta.get("native_width", False),
             "label_smoothing": args.label_smoothing,
+            "spatial_dropout": args.spatial_dropout,
             "bpp": round(bpp, 4),
             "train_top1": round(t_top1, 2),
             "top1_acc": round(top1, 2),
@@ -859,6 +870,7 @@ def main(argv=None):
                 "num_params": num_params,
                 "native_width": meta.get("native_width", False),
                 "label_smoothing": args.label_smoothing,
+                "spatial_dropout": args.spatial_dropout,
                 "bpp": round(bpp_z + bpp, 4),
                 "train_top1": round(t_top1, 2),
                 "top1_acc": round(top1, 2),
