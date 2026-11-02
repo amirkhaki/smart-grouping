@@ -62,6 +62,7 @@ from benchmarks.evaluate import (
     generate_stem_ablation_plot,
 )
 from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
+from benchmarks.profiler import ExecutionProfiler
 from benchmarks.sparsity import (
     compute_channel_densities,
     format_density_summary,
@@ -211,6 +212,30 @@ def parse_args(argv=None):
         action="store_true",
         help="Execute single epoch on small subset to test end-to-end evaluation flow",
     )
+    parser.add_argument(
+        "--in-memory",
+        action="store_true",
+        default=True,
+        help="Preload latents into system RAM to eliminate disk I/O bottlenecks (default: True).",
+    )
+    parser.add_argument(
+        "--no-in-memory",
+        dest="in_memory",
+        action="store_false",
+        help="Disable in-memory preloading and stream directly from disk HDF5.",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        default=True,
+        help="Profile execution time across data loading, PCIe transfer, forward/backward, and validation (default: True).",
+    )
+    parser.add_argument(
+        "--no-profile",
+        dest="profile",
+        action="store_false",
+        help="Disable performance profiling.",
+    )
     return parser.parse_args(argv)
 
 
@@ -351,40 +376,7 @@ def main(argv=None):
     h5_path = find_h5_cache(args.cache_dir)
     print(f"[INIT] Located Tier-1 HDF5 Cache: {h5_path} ({h5_path.stat().st_size / (1024**3):.2f} GB)")
 
-    # 2. Instantiate Datasets and DataLoaders
-    train_dataset = HDF5LatentDataset(h5_path, split="train")
-    test_dataset = HDF5LatentDataset(h5_path, split="test")
-
-    epochs = args.epochs
-    if args.dry_run:
-        print("[DRY-RUN] Setting epochs=1 and using minimal sample subsets")
-        epochs = 1
-        train_dataset.indices = train_dataset.indices[:20]
-        test_dataset.indices = test_dataset.indices[:20]
-
-    print(f"[INIT] Loaded {len(train_dataset)} train samples, {len(test_dataset)} test samples")
-
-    use_cuda = (args.device == "cuda") and torch.cuda.is_available()
-    use_amp = args.amp and use_cuda
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=use_cuda,
-        persistent_workers=(args.num_workers > 0),
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=use_cuda,
-        persistent_workers=(args.num_workers > 0),
-    )
-
-    # 3. Handle Least-Sparse Channel Subsets if requested
+    # 2. Handle Least-Sparse Channel Subsets if requested
     custom_subsets = None
     if args.least_sparse:
         print("\n[SPARSITY] Calculating channel activation densities across quantized training latents...")
@@ -407,7 +399,7 @@ def main(argv=None):
             indices = [r["channel"] for r in ranked_channels[:k]]
             custom_subsets[f"LS{k}"] = indices
 
-    # Filter selections
+    # 3. Filter selections & probe model configuration
     arch_filter = None if args.arch == "all" else [args.arch]
     if args.least_sparse and args.arch == "all":
         arch_filter = ["latent_head"]
@@ -419,6 +411,71 @@ def main(argv=None):
     views_filter = args.views
     if args.least_sparse is not None and args.views is None:
         views_filter = []
+
+    load_continuous = (quant_filter is None or "continuous" in quant_filter)
+    load_quantized = (quant_filter is None or "quantized" in quant_filter)
+
+    # Check RAM capacity for in-memory preloading to eliminate disk I/O bottleneck
+    in_mem = args.in_memory
+    if in_mem:
+        try:
+            mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_AVPHYS_PAGES')
+            avail_gb = mem_bytes / (1024 ** 3)
+            needed_gb = 4.0 if not load_continuous else 8.0
+            if avail_gb < needed_gb + 2.0:
+                print(f"[INIT] Available system RAM ({avail_gb:.1f} GB) is close to threshold ({needed_gb:.1f} GB). Streaming from disk.")
+                in_mem = False
+            else:
+                print(f"[INIT] System RAM available: {avail_gb:.1f} GB. In-memory latent preloading ENABLED (Zero Disk I/O during training).")
+        except Exception:
+            pass
+
+    # 4. Instantiate Datasets and DataLoaders
+    train_dataset = HDF5LatentDataset(
+        h5_path,
+        split="train",
+        in_memory=in_mem,
+        load_continuous=load_continuous,
+        load_quantized=load_quantized,
+    )
+    test_dataset = HDF5LatentDataset(
+        h5_path,
+        split="test",
+        in_memory=in_mem,
+        load_continuous=load_continuous,
+        load_quantized=load_quantized,
+    )
+
+    epochs = args.epochs
+    if args.dry_run:
+        print("[DRY-RUN] Setting epochs=1 and using minimal sample subsets")
+        epochs = 1
+        train_dataset.indices = train_dataset.indices[:20]
+        test_dataset.indices = test_dataset.indices[:20]
+
+    print(f"[INIT] Loaded {len(train_dataset)} train samples, {len(test_dataset)} test samples")
+
+    use_cuda = (args.device == "cuda") and torch.cuda.is_available()
+    use_amp = args.amp and use_cuda
+
+    worker_count = min(args.num_workers, 2) if in_mem else args.num_workers
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=worker_count,
+        pin_memory=use_cuda,
+        persistent_workers=(worker_count > 0),
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=worker_count,
+        pin_memory=use_cuda,
+        persistent_workers=(worker_count > 0),
+    )
 
     container = MultiHeadClassifierContainer(
         num_classes=NUM_CLASSES,
@@ -448,7 +505,7 @@ def main(argv=None):
     scaler = get_grad_scaler(device_type=device_type, enabled=use_amp)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # 4. State tracking for dynamic early stopping, training history & per-head best checkpoints
+    # 5. State tracking for dynamic early stopping, training history & performance profiling
     best_top1: Dict[str, float] = {k: -1.0 for k in raw_container.head_keys}
     best_weights: Dict[str, Dict[str, torch.Tensor]] = {
         k: {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
@@ -464,10 +521,13 @@ def main(argv=None):
     last_val_top5: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
     last_val_loss: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
 
+    profiler = ExecutionProfiler(device=args.device) if args.profile else None
+
     t_start = time.time()
     amp_status = "Enabled (FP16)" if use_amp else "Disabled (FP32)"
     es_status = f"Enabled (patience={args.patience}, eval_every={args.eval_every})" if args.early_stopping else "Disabled"
-    print(f"\n[TRAIN] Beginning {epochs} epochs of training (Batch Size: {args.batch_size}, AMP: {amp_status}, Early Stopping: {es_status})...")
+    in_mem_status = "Enabled (RAM Preloaded)" if in_mem else "Disabled (Disk Streaming)"
+    print(f"\n[TRAIN] Beginning {epochs} epochs of training (Batch Size: {args.batch_size}, In-Memory: {in_mem_status}, AMP: {amp_status}, Early Stopping: {es_status})...")
 
     # Training Loop
     for epoch in range(1, epochs + 1):
@@ -480,23 +540,50 @@ def main(argv=None):
         train_head_loss = {k: 0.0 for k in raw_container.active_head_keys}
         train_head_samples = {k: 0 for k in raw_container.active_head_keys}
 
+        t_data_sum = 0.0
+        t_xfer_sum = 0.0
+        t_fwd_sum = 0.0
+        t_bwd_sum = 0.0
+
+        t_data_start = time.perf_counter()
         for batch in train_loader:
             if raw_container.all_frozen():
                 break
 
-            y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda)
-            y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda)
+            if profiler:
+                profiler.sync()
+            t_batch_ready = time.perf_counter()
+            t_data_sum += (t_batch_ready - t_data_start)
+
+            t_xfer_start = time.perf_counter()
+            y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda) if load_quantized else torch.empty(0)
+            y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda) if load_continuous else torch.empty(0)
             labels = batch["label"].to(args.device, non_blocking=use_cuda)
             B = labels.size(0)
+            if profiler:
+                profiler.sync()
+            t_xfer_end = time.perf_counter()
+            t_xfer_sum += (t_xfer_end - t_xfer_start)
 
+            t_fwd_start = time.perf_counter()
             optimizer.zero_grad()
             with get_autocast(device_type=device_type, enabled=use_amp):
                 logits_dict = model(y_q, y_c)
-                total_loss, per_head_losses = raw_container.compute_loss(logits_dict, labels)
+            if profiler:
+                profiler.sync()
+            t_fwd_end = time.perf_counter()
+            t_fwd_sum += (t_fwd_end - t_fwd_start)
 
+            t_bwd_start = time.perf_counter()
+            with get_autocast(device_type=device_type, enabled=use_amp):
+                total_loss, per_head_losses = raw_container.compute_loss(logits_dict, labels)
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            if profiler:
+                profiler.sync()
+            t_bwd_end = time.perf_counter()
+            t_bwd_sum += (t_bwd_end - t_bwd_start)
 
             running_loss += total_loss.item()
             num_batches += 1
@@ -512,6 +599,9 @@ def main(argv=None):
                     train_head_loss[k] += per_head_losses.get(k, 0.0) * B
                     train_head_samples[k] += B
 
+            t_data_start = time.perf_counter()
+
+        t_post_start = time.perf_counter()
         scheduler.step()
         avg_loss = running_loss / max(num_batches, 1)
 
@@ -523,9 +613,14 @@ def main(argv=None):
             last_train_loss[k] = train_head_loss[k] / denom
 
         # Evaluate validation set every epoch for active heads
+        t_val_start = time.perf_counter()
         val_top1_map, val_top5_map, val_loss_map = evaluate_epoch(
             model, test_loader, args.device, use_cuda, use_amp
         )
+        if profiler:
+            profiler.sync()
+        t_val = time.perf_counter() - t_val_start
+
         for k in raw_container.active_head_keys:
             if k in val_top1_map:
                 last_val_top1[k] = val_top1_map[k]
@@ -551,6 +646,22 @@ def main(argv=None):
                 if last_val_top1[k] > best_top1[k]:
                     best_top1[k] = last_val_top1[k]
                     best_weights[k] = {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
+
+        t_post_end = time.perf_counter()
+        t_overhead = max((t_post_end - t_post_start) - t_val, 0.0)
+
+        # Record profiling breakdown
+        prof_rec = None
+        if profiler:
+            prof_rec = profiler.record_epoch(
+                epoch=epoch,
+                t_data=t_data_sum,
+                t_transfer=t_xfer_sum,
+                t_forward=t_fwd_sum,
+                t_backward=t_bwd_sum,
+                t_val=t_val,
+                t_overhead=t_overhead,
+            )
 
         # Record epoch metrics for all heads
         for k in raw_container.head_keys:
@@ -583,6 +694,8 @@ def main(argv=None):
             mean_train_acc = float(np.mean([last_train_top1[k] for k in raw_container.active_head_keys])) if active_count else 0.0
             mean_val_acc = float(np.mean([last_val_top1[k] for k in raw_container.active_head_keys])) if active_count else 0.0
             print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {avg_loss:.4f} - Train Top-1: {mean_train_acc:.2f}% - Val Top-1: {mean_val_acc:.2f}% - Active: {active_count}/{total_heads_count} - LR: {scheduler.get_last_lr()[0]:.6f}")
+            if profiler and prof_rec:
+                print(profiler.format_epoch_summary(prof_rec))
 
         if raw_container.all_frozen():
             print(f"\n[EARLY STOP] All {total_heads_count} heads converged at epoch {epoch}! Exiting training early.")
@@ -590,6 +703,12 @@ def main(argv=None):
 
     train_time = time.time() - t_start
     print(f"[TRAIN] Finished training in {train_time:.1f}s ({train_time / 60:.2f} min)")
+
+    if profiler:
+        print(profiler.format_overall_summary())
+        profile_csv = out_dir / "timing_profile.csv"
+        profile_plot = out_dir / "timing_profile.png"
+        profiler.export(profile_csv, profile_plot)
 
     # 5. Restore each head's peak weights for final benchmark scoring
     print("\n[RESTORE] Restoring peak weights achieved across training for each head...")

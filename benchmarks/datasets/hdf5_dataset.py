@@ -19,12 +19,18 @@ class HDF5LatentDataset(Dataset):
         self,
         h5_path: Union[str, Path],
         split: Literal["train", "test", "all"] = "train",
+        in_memory: bool = False,
+        load_continuous: bool = True,
+        load_quantized: bool = True,
     ):
         self.h5_path = Path(h5_path)
         if not self.h5_path.is_file():
             raise FileNotFoundError(f"HDF5 archive not found: {self.h5_path}")
 
         self.split = split
+        self.in_memory = in_memory
+        self.load_continuous = load_continuous
+        self.load_quantized = load_quantized
         self._h5_file: Optional[h5py.File] = None
 
         # Inspect metadata and partition indices without keeping handle open
@@ -45,8 +51,22 @@ class HDF5LatentDataset(Dataset):
 
         self.num_samples = len(self.indices)
 
+        self._latents_q: Optional[torch.Tensor] = None
+        self._latents_c: Optional[torch.Tensor] = None
+        self._labels: Optional[torch.Tensor] = None
+        self._bitrates: Optional[torch.Tensor] = None
+
+        if self.in_memory:
+            with h5py.File(str(self.h5_path), mode="r") as f:
+                if load_quantized:
+                    self._latents_q = torch.from_numpy(f["latents_quantized"][self.indices])
+                if load_continuous:
+                    self._latents_c = torch.from_numpy(f["latents_continuous"][self.indices])
+                self._labels = torch.from_numpy(f["labels"][self.indices]).long()
+                self._bitrates = torch.from_numpy(f["bitrates_bpp"][self.indices]).float()
+
     def _get_handle(self) -> h5py.File:
-        """Lazily obtain worker-local HDF5 file handle."""
+        """Lazily obtain worker-local HDF5 file handle for disk streaming."""
         if self._h5_file is None:
             self._h5_file = h5py.File(str(self.h5_path), mode="r", swmr=True)
         return self._h5_file
@@ -56,23 +76,23 @@ class HDF5LatentDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Fetch sample by index, casting float16 latents to float32 tensors."""
-        h5 = self._get_handle()
         real_idx = int(self.indices[idx])
 
-        # Read float16 latent arrays
-        y_q_np = h5["latents_quantized"][real_idx]
-        y_c_np = h5["latents_continuous"][real_idx]
-        label = int(h5["labels"][real_idx])
-        bitrates_np = h5["bitrates_bpp"][real_idx]
-
-        # Convert to float32 PyTorch tensors
-        y_quantized = torch.from_numpy(y_q_np).float()
-        y_continuous = torch.from_numpy(y_c_np).float()
-        bitrates = torch.from_numpy(bitrates_np).float()
+        if self.in_memory:
+            y_q = self._latents_q[idx].float() if self._latents_q is not None else torch.empty(0)
+            y_c = self._latents_c[idx].float() if self._latents_c is not None else torch.empty(0)
+            label = int(self._labels[idx].item())
+            bitrates = self._bitrates[idx]
+        else:
+            h5 = self._get_handle()
+            y_q = torch.from_numpy(h5["latents_quantized"][real_idx]).float() if self.load_quantized else torch.empty(0)
+            y_c = torch.from_numpy(h5["latents_continuous"][real_idx]).float() if self.load_continuous else torch.empty(0)
+            label = int(h5["labels"][real_idx])
+            bitrates = torch.from_numpy(h5["bitrates_bpp"][real_idx]).float()
 
         return {
-            "y_quantized": y_quantized,
-            "y_continuous": y_continuous,
+            "y_quantized": y_q,
+            "y_continuous": y_c,
             "label": label,
             "bitrates_bpp": bitrates,
             "index": real_idx,

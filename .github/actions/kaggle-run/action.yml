@@ -192,6 +192,10 @@ runs:
             echo "#### overfitting_analysis.csv"
             echo '```'; cat out/overfitting_analysis.csv; echo '```'
           fi
+          if [ -f out/timing_profile.csv ]; then
+            echo "#### timing_profile.csv"
+            echo '```'; cat out/timing_profile.csv; echo '```'
+          fi
         } >> "$GITHUB_STEP_SUMMARY"
 
     - uses: actions/upload-artifact@v4
