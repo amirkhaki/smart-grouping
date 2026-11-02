@@ -52,7 +52,12 @@ from benchmarks.config import (
 from benchmarks.datasets.hdf5_dataset import HDF5LatentDataset
 from benchmarks.evaluate import (
     export_master_results,
+    export_overfitting_analysis,
+    export_training_history,
+    generate_generalization_gap_plot,
+    generate_learning_curves_plot,
     generate_least_sparse_plot,
+    generate_loss_curves_plot,
     generate_pareto_plot,
     generate_stem_ablation_plot,
 )
@@ -275,21 +280,24 @@ def calculate_slice_bitrates(
     return slice_bpp, bpp_z
 
 
-def evaluate_active_heads(
+def evaluate_epoch(
     model: nn.Module,
     loader: DataLoader,
     device: str,
     use_cuda: bool,
     use_amp: bool,
-) -> Dict[str, float]:
-    """Fast validation pass measuring Top-1 accuracy for currently active heads."""
+    target_keys: Optional[List[str]] = None,
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+    """Fast validation pass measuring Top-1, Top-5, and cross-entropy loss."""
     model.eval()
     raw = model.module if isinstance(model, nn.DataParallel) else model
-    target_keys = list(raw.active_head_keys)
-    if not target_keys:
-        return {}
+    targets = list(target_keys) if target_keys is not None else list(raw.active_head_keys)
+    if not targets:
+        return {}, {}, {}
 
-    correct_counts = {k: 0 for k in target_keys}
+    correct1 = {k: 0 for k in targets}
+    correct5 = {k: 0 for k in targets}
+    loss_sum = {k: 0.0 for k in targets}
     total = 0
 
     device_type = "cuda" if str(device).startswith("cuda") else "cpu"
@@ -304,13 +312,34 @@ def evaluate_active_heads(
             with get_autocast(device_type=device_type, enabled=use_amp):
                 logits_dict = model(y_q, y_c)
 
-            for head_key in target_keys:
-                if head_key in logits_dict:
-                    pred = logits_dict[head_key].argmax(dim=1)
-                    correct_counts[head_key] += (pred == labels).sum().item()
+            for k in targets:
+                if k in logits_dict:
+                    logits = logits_dict[k]
+                    _, pred = logits.topk(5, 1, True, True)
+                    pred = pred.t()
+                    correct = pred.eq(labels.view(1, -1).expand_as(pred))
+                    correct1[k] += correct[:1].reshape(-1).int().sum().item()
+                    correct5[k] += correct[:5].reshape(-1).int().sum().item()
+                    loss_sum[k] += F.cross_entropy(logits, labels).item() * B
 
     model.train()
-    return {k: (correct_counts[k] / max(total, 1)) * 100.0 for k in target_keys}
+    denom = max(total, 1)
+    top1_map = {k: (correct1[k] / denom) * 100.0 for k in targets}
+    top5_map = {k: (correct5[k] / denom) * 100.0 for k in targets}
+    loss_map = {k: (loss_sum[k] / denom) for k in targets}
+    return top1_map, top5_map, loss_map
+
+
+def evaluate_active_heads(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
+    use_cuda: bool,
+    use_amp: bool,
+) -> Dict[str, float]:
+    """Fast validation pass measuring Top-1 accuracy for currently active heads."""
+    top1, _, _ = evaluate_epoch(model, loader, device, use_cuda, use_amp)
+    return top1
 
 
 def main(argv=None):
@@ -419,13 +448,21 @@ def main(argv=None):
     scaler = get_grad_scaler(device_type=device_type, enabled=use_amp)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    # 4. State tracking for dynamic early stopping & per-head best checkpoints
+    # 4. State tracking for dynamic early stopping, training history & per-head best checkpoints
     best_top1: Dict[str, float] = {k: -1.0 for k in raw_container.head_keys}
     best_weights: Dict[str, Dict[str, torch.Tensor]] = {
         k: {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
         for k in raw_container.head_keys
     }
     patience_counter: Dict[str, int] = {k: 0 for k in raw_container.head_keys}
+    history_records: List[Dict[str, Any]] = []
+
+    last_train_top1: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
+    last_train_top5: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
+    last_train_loss: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
+    last_val_top1: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
+    last_val_top5: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
+    last_val_loss: Dict[str, float] = {k: 0.0 for k in raw_container.head_keys}
 
     t_start = time.time()
     amp_status = "Enabled (FP16)" if use_amp else "Disabled (FP32)"
@@ -438,6 +475,11 @@ def main(argv=None):
         running_loss = 0.0
         num_batches = 0
 
+        train_correct1 = {k: 0 for k in raw_container.active_head_keys}
+        train_correct5 = {k: 0 for k in raw_container.active_head_keys}
+        train_head_loss = {k: 0.0 for k in raw_container.active_head_keys}
+        train_head_samples = {k: 0 for k in raw_container.active_head_keys}
+
         for batch in train_loader:
             if raw_container.all_frozen():
                 break
@@ -445,11 +487,12 @@ def main(argv=None):
             y_q = batch["y_quantized"].to(args.device, non_blocking=use_cuda)
             y_c = batch["y_continuous"].to(args.device, non_blocking=use_cuda)
             labels = batch["label"].to(args.device, non_blocking=use_cuda)
+            B = labels.size(0)
 
             optimizer.zero_grad()
             with get_autocast(device_type=device_type, enabled=use_amp):
                 logits_dict = model(y_q, y_c)
-                total_loss, _ = raw_container.compute_loss(logits_dict, labels)
+                total_loss, per_head_losses = raw_container.compute_loss(logits_dict, labels)
 
             scaler.scale(total_loss).backward()
             scaler.step(optimizer)
@@ -458,18 +501,41 @@ def main(argv=None):
             running_loss += total_loss.item()
             num_batches += 1
 
+            # Accumulate per-head training metrics
+            with torch.no_grad():
+                for k, logits in logits_dict.items():
+                    _, pred = logits.topk(5, 1, True, True)
+                    pred = pred.t()
+                    correct = pred.eq(labels.view(1, -1).expand_as(pred))
+                    train_correct1[k] += correct[:1].reshape(-1).int().sum().item()
+                    train_correct5[k] += correct[:5].reshape(-1).int().sum().item()
+                    train_head_loss[k] += per_head_losses.get(k, 0.0) * B
+                    train_head_samples[k] += B
+
         scheduler.step()
         avg_loss = running_loss / max(num_batches, 1)
 
-        active_count = len(raw_container.active_head_keys)
-        if epoch % 5 == 0 or epoch == epochs or epoch == 1:
-            print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {avg_loss:.4f} - Active Heads: {active_count}/{total_heads_count} - LR: {scheduler.get_last_lr()[0]:.6f}")
+        # Update training metrics for active heads
+        for k in raw_container.active_head_keys:
+            denom = max(train_head_samples[k], 1)
+            last_train_top1[k] = (train_correct1[k] / denom) * 100.0
+            last_train_top5[k] = (train_correct5[k] / denom) * 100.0
+            last_train_loss[k] = train_head_loss[k] / denom
 
-        # Check early stopping / validation convergence periodically
+        # Evaluate validation set every epoch for active heads
+        val_top1_map, val_top5_map, val_loss_map = evaluate_epoch(
+            model, test_loader, args.device, use_cuda, use_amp
+        )
+        for k in raw_container.active_head_keys:
+            if k in val_top1_map:
+                last_val_top1[k] = val_top1_map[k]
+                last_val_top5[k] = val_top5_map[k]
+                last_val_loss[k] = val_loss_map[k]
+
+        # Early stopping and best checkpoint tracking
         if args.early_stopping and (epoch >= args.min_epochs) and (epoch % args.eval_every == 0):
-            current_accs = evaluate_active_heads(model, test_loader, args.device, use_cuda, use_amp)
             for k in list(raw_container.active_head_keys):
-                cur_acc = current_accs.get(k, 0.0)
+                cur_acc = last_val_top1[k]
                 if cur_acc > best_top1[k]:
                     best_top1[k] = cur_acc
                     best_weights[k] = {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
@@ -479,10 +545,48 @@ def main(argv=None):
                     if patience_counter[k] >= args.patience:
                         raw_container.freeze_head(k)
                         print(f"    [FREEZE] Head '{k}' converged (Peak Top-1: {best_top1[k]:.2f}%). Freezing head to save compute.")
+        else:
+            # Always track best weights whenever a head achieves a new peak validation accuracy
+            for k in raw_container.active_head_keys:
+                if last_val_top1[k] > best_top1[k]:
+                    best_top1[k] = last_val_top1[k]
+                    best_weights[k] = {n: p.detach().cpu().clone() for n, p in raw_container.heads[k].state_dict().items()}
 
-            if raw_container.all_frozen():
-                print(f"\n[EARLY STOP] All {total_heads_count} heads converged at epoch {epoch}! Exiting training early.")
-                break
+        # Record epoch metrics for all heads
+        for k in raw_container.head_keys:
+            meta = raw_container.head_metadata[k]
+            spec = meta.get("slice_spec")
+            category = spec.category if spec is not None else "least_sparse"
+            is_frozen = not raw_container.is_active(k)
+
+            history_records.append({
+                "epoch": epoch,
+                "head_key": k,
+                "view": meta.get("slice_name", k),
+                "category": category,
+                "arch": meta["arch"],
+                "quant": meta["quant"],
+                "in_channels": meta.get("in_channels"),
+                "stem_channels": meta.get("stem_channels"),
+                "num_params": meta.get("num_params", 0),
+                "train_loss": round(last_train_loss[k], 4),
+                "train_top1": round(last_train_top1[k], 2),
+                "train_top5": round(last_train_top5[k], 2),
+                "val_loss": round(last_val_loss[k], 4),
+                "val_top1": round(last_val_top1[k], 2),
+                "val_top5": round(last_val_top5[k], 2),
+                "is_frozen": is_frozen,
+            })
+
+        active_count = len(raw_container.active_head_keys)
+        if epoch % 5 == 0 or epoch == epochs or epoch == 1:
+            mean_train_acc = float(np.mean([last_train_top1[k] for k in raw_container.active_head_keys])) if active_count else 0.0
+            mean_val_acc = float(np.mean([last_val_top1[k] for k in raw_container.active_head_keys])) if active_count else 0.0
+            print(f"  Epoch [{epoch:02d}/{epochs:02d}] - Loss: {avg_loss:.4f} - Train Top-1: {mean_train_acc:.2f}% - Val Top-1: {mean_val_acc:.2f}% - Active: {active_count}/{total_heads_count} - LR: {scheduler.get_last_lr()[0]:.6f}")
+
+        if raw_container.all_frozen():
+            print(f"\n[EARLY STOP] All {total_heads_count} heads converged at epoch {epoch}! Exiting training early.")
+            break
 
     train_time = time.time() - t_start
     print(f"[TRAIN] Finished training in {train_time:.1f}s ({train_time / 60:.2f} min)")
@@ -557,6 +661,7 @@ def main(argv=None):
             else:
                 bpp = 0.0
 
+        t_top1 = last_train_top1.get(head_key, 0.0)
         rec = {
             "head_key": head_key,
             "view": view,
@@ -568,8 +673,10 @@ def main(argv=None):
             "num_params": num_params,
             "native_width": meta.get("native_width", False),
             "bpp": round(bpp, 4),
+            "train_top1": round(t_top1, 2),
             "top1_acc": round(top1, 2),
             "top5_acc": round(top5, 2),
+            "gen_gap": round(t_top1 - top1, 2),
             "lmbda": lmbda_val,
         }
         if channel_indices is not None:
@@ -591,18 +698,39 @@ def main(argv=None):
                 "num_params": num_params,
                 "native_width": meta.get("native_width", False),
                 "bpp": round(bpp_z + bpp, 4),
+                "train_top1": round(t_top1, 2),
                 "top1_acc": round(top1, 2),
                 "top5_acc": round(top5, 2),
+                "gen_gap": round(t_top1 - top1, 2),
                 "lmbda": lmbda_val,
             })
 
-    # 8. Serialize Metrics and Plots
+    # 8. Serialize Metrics, History, Overfitting Analysis, and Plots
     out_csv = out_dir / "master_results.csv"
     out_json = out_dir / "metrics.json"
     out_plot = out_dir / "pareto_curve.png"
 
     df = export_master_results(records, out_csv, out_json)
     generate_pareto_plot(df, out_plot)
+
+    # Export Training History (epoch-by-epoch)
+    history_csv = out_dir / "training_history.csv"
+    history_df = export_training_history(history_records, history_csv)
+
+    # Export Overfitting Analysis Summary
+    overfitting_csv = out_dir / "overfitting_analysis.csv"
+    overfitting_df = export_overfitting_analysis(df, history_df, overfitting_csv)
+
+    # Generate Learning Curves (Train vs. Val Accuracy & Loss across epochs)
+    curves_plot = out_dir / "train_val_curves.png"
+    generate_learning_curves_plot(history_df, curves_plot)
+
+    loss_plot = out_dir / "train_val_loss_curves.png"
+    generate_loss_curves_plot(history_df, loss_plot)
+
+    # Generate Generalization Gap Diagnostic Chart
+    gap_plot = out_dir / "generalization_gap.png"
+    generate_generalization_gap_plot(overfitting_df, gap_plot)
 
     # If any view has multiple stem channel widths, generate ablation curve
     for v in df["view"].unique():
@@ -624,10 +752,14 @@ def main(argv=None):
         display_cols.append("stem_channels")
     if "num_params" in df.columns and df["num_params"].nunique() > 1:
         display_cols.append("num_params")
-    display_cols.extend(["bpp", "top1_acc"])
+    display_cols.extend(["bpp", "train_top1", "top1_acc", "gen_gap"])
     if "channels" in df.columns and df["channels"].dropna().count() > 0:
         display_cols.append("channels")
     print(df[display_cols].to_string())
+
+    print("\n[ANALYSIS] Generalization Gap & Overfitting Diagnostics:")
+    overfit_cols = ["head_key", "num_params", "final_train_top1", "peak_val_top1", "generalization_gap", "diagnosis"]
+    print(overfitting_df[overfit_cols].to_string(index=False))
 
 
 if __name__ == "__main__":

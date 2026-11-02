@@ -188,6 +188,10 @@ runs:
             echo "#### master_results.csv"
             echo '```'; cat out/master_results.csv; echo '```'
           fi
+          if [ -f out/overfitting_analysis.csv ]; then
+            echo "#### overfitting_analysis.csv"
+            echo '```'; cat out/overfitting_analysis.csv; echo '```'
+          fi
         } >> "$GITHUB_STEP_SUMMARY"
 
     - uses: actions/upload-artifact@v4

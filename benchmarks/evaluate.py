@@ -244,3 +244,290 @@ def generate_least_sparse_plot(
     plt.savefig(out_path)
     plt.close()
     print(f"[PLOT] Generated Least-Sparse channel curve: {out_path}")
+
+
+def export_training_history(
+    history_records: List[Dict[str, Any]],
+    out_csv_path: Union[str, Path],
+) -> pd.DataFrame:
+    """Save epoch-by-epoch training and validation metrics for all heads to CSV."""
+    df = pd.DataFrame(history_records)
+    out_csv = Path(out_csv_path)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    print(f"[HISTORY] Saved full training history to: {out_csv} ({len(df)} epoch-head records)")
+    return df
+
+
+def export_overfitting_analysis(
+    master_df: pd.DataFrame,
+    history_df: pd.DataFrame,
+    out_csv_path: Union[str, Path],
+) -> pd.DataFrame:
+    """Generate summary table comparing Train Top-1 vs Val Top-1 to diagnose overfitting vs underfitting."""
+    records: List[Dict[str, Any]] = []
+
+    head_keys = list(history_df["head_key"].unique()) if "head_key" in history_df.columns else []
+    for k in head_keys:
+        sub = history_df[history_df["head_key"] == k].sort_values("epoch")
+        if sub.empty:
+            continue
+
+        row_0 = sub.iloc[0]
+        final_train_top1 = float(sub["train_top1"].iloc[-1])
+        final_train_loss = float(sub["train_loss"].iloc[-1])
+        peak_val_top1 = float(sub["val_top1"].max())
+        final_val_top1 = float(sub["val_top1"].iloc[-1])
+        final_val_loss = float(sub["val_loss"].iloc[-1])
+        num_params = int(row_0.get("num_params", 0))
+
+        gen_gap = round(final_train_top1 - peak_val_top1, 2)
+
+        if final_train_top1 < 40.0 and gen_gap < 8.0:
+            diagnosis = "Underfitting (Capacity Constrained - Can Add Parameters)"
+        elif gen_gap <= 8.0:
+            diagnosis = "Well Balanced (Generalizing Well - Capacity Headroom)"
+        elif gen_gap <= 18.0:
+            diagnosis = "Moderate Overfitting (Slight Gap)"
+        else:
+            diagnosis = "Severe Overfitting (Needs Regularization)"
+
+        records.append({
+            "head_key": k,
+            "view": row_0.get("view", k),
+            "category": row_0.get("category", ""),
+            "arch": row_0.get("arch", ""),
+            "quant": row_0.get("quant", ""),
+            "in_channels": row_0.get("in_channels"),
+            "stem_channels": row_0.get("stem_channels"),
+            "num_params": num_params,
+            "final_train_loss": round(final_train_loss, 4),
+            "final_train_top1": round(final_train_top1, 2),
+            "final_val_loss": round(final_val_loss, 4),
+            "final_val_top1": round(final_val_top1, 2),
+            "peak_val_top1": round(peak_val_top1, 2),
+            "generalization_gap": gen_gap,
+            "diagnosis": diagnosis,
+        })
+
+    df = pd.DataFrame(records)
+    if not df.empty and "num_params" in df.columns:
+        df = df.sort_values(by="num_params", ascending=True).reset_index(drop=True)
+
+    out_csv = Path(out_csv_path)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    print(f"[RESULTS] Saved Overfitting Analysis summary to: {out_csv} ({len(df)} heads)")
+    return df
+
+
+def generate_learning_curves_plot(
+    history_df: pd.DataFrame,
+    out_plot_path: Union[str, Path],
+    title: Optional[str] = None,
+):
+    """Generate multi-panel grid plot of Train Top-1 vs Val Top-1 accuracy across epochs."""
+    if history_df.empty or "head_key" not in history_df.columns:
+        return
+
+    head_keys = list(history_df["head_key"].unique())
+    num_heads = len(head_keys)
+    if num_heads == 0:
+        return
+
+    if num_heads <= 3:
+        ncols = num_heads
+        nrows = 1
+    elif num_heads == 4:
+        ncols, nrows = 2, 2
+    elif num_heads <= 6:
+        ncols, nrows = 3, 2
+    elif num_heads <= 9:
+        ncols, nrows = 3, 3
+    elif num_heads <= 16:
+        ncols = 4
+        nrows = (num_heads + 3) // 4
+    else:
+        ncols = 4
+        nrows = (num_heads + 3) // 4
+
+    figsize = (ncols * 4.2, nrows * 3.4)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=150, squeeze=False)
+
+    for i, head_key in enumerate(head_keys):
+        r, c = i // ncols, i % ncols
+        ax = axes[r, c]
+
+        sub = history_df[history_df["head_key"] == head_key].sort_values("epoch")
+        epochs = sub["epoch"]
+        train_acc = sub["train_top1"]
+        val_acc = sub["val_top1"]
+
+        ax.plot(epochs, train_acc, label="Train Top-1", color="#1f77b4", linewidth=2.0)
+        ax.plot(epochs, val_acc, label="Val Top-1", color="#ff7f0e", linewidth=2.0)
+
+        # Mark freeze epoch if dynamic early stopping was triggered
+        if "is_frozen" in sub.columns and sub["is_frozen"].any():
+            frozen_sub = sub[sub["is_frozen"]]
+            if not frozen_sub.empty:
+                freeze_ep = frozen_sub["epoch"].min()
+                ax.axvline(x=freeze_ep, color="#d62728", linestyle="--", alpha=0.8, label=f"Frozen (ep {freeze_ep})")
+
+        final_train = float(train_acc.iloc[-1]) if len(train_acc) > 0 else 0.0
+        peak_val = float(val_acc.max()) if len(val_acc) > 0 else 0.0
+        gap = final_train - peak_val
+
+        p_val = sub["num_params"].iloc[0] if "num_params" in sub.columns else 0
+        p_str = f"{p_val/1e3:.1f}k" if p_val < 1e6 else f"{p_val/1e6:.2f}M"
+
+        ax.set_title(f"{head_key}\n({p_str} params | Gap: {gap:+.1f}%)", fontsize=9, fontweight="bold")
+        ax.set_xlabel("Epoch", fontsize=8)
+        ax.set_ylabel("Top-1 Acc (%)", fontsize=8)
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(loc="lower right", fontsize=7, framealpha=0.85)
+
+        y_max = max(train_acc.max() if len(train_acc) else 0, val_acc.max() if len(val_acc) else 0)
+        ax.set_ylim(bottom=0, top=min(100, y_max + 10))
+
+    # Hide unused axes
+    for j in range(num_heads, nrows * ncols):
+        fig.delaxes(axes[j // ncols, j % ncols])
+
+    plot_title = title or "Train Top-1 vs. Validation Top-1 Across Epochs (Overfitting Analysis)"
+    plt.suptitle(plot_title, fontsize=13, fontweight="bold", y=0.995)
+    plt.tight_layout()
+
+    out_path = Path(out_plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, bbox_inches="tight")
+    plt.close()
+    print(f"[PLOT] Generated Train vs. Val learning curves: {out_path}")
+
+
+def generate_loss_curves_plot(
+    history_df: pd.DataFrame,
+    out_plot_path: Union[str, Path],
+    title: Optional[str] = None,
+):
+    """Generate multi-panel grid plot of Train Loss vs Val Loss across epochs."""
+    if history_df.empty or "head_key" not in history_df.columns:
+        return
+
+    head_keys = list(history_df["head_key"].unique())
+    num_heads = len(head_keys)
+    if num_heads == 0:
+        return
+
+    if num_heads <= 3:
+        ncols = num_heads
+        nrows = 1
+    elif num_heads == 4:
+        ncols, nrows = 2, 2
+    elif num_heads <= 6:
+        ncols, nrows = 3, 2
+    elif num_heads <= 9:
+        ncols, nrows = 3, 3
+    elif num_heads <= 16:
+        ncols = 4
+        nrows = (num_heads + 3) // 4
+    else:
+        ncols = 4
+        nrows = (num_heads + 3) // 4
+
+    figsize = (ncols * 4.2, nrows * 3.4)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=150, squeeze=False)
+
+    for i, head_key in enumerate(head_keys):
+        r, c = i // ncols, i % ncols
+        ax = axes[r, c]
+
+        sub = history_df[history_df["head_key"] == head_key].sort_values("epoch")
+        epochs = sub["epoch"]
+        train_loss = sub["train_loss"]
+        val_loss = sub["val_loss"]
+
+        ax.plot(epochs, train_loss, label="Train Loss", color="#1f77b4", linewidth=2.0)
+        ax.plot(epochs, val_loss, label="Val Loss", color="#ff7f0e", linewidth=2.0)
+
+        if "is_frozen" in sub.columns and sub["is_frozen"].any():
+            frozen_sub = sub[sub["is_frozen"]]
+            if not frozen_sub.empty:
+                freeze_ep = frozen_sub["epoch"].min()
+                ax.axvline(x=freeze_ep, color="#d62728", linestyle="--", alpha=0.8, label=f"Frozen (ep {freeze_ep})")
+
+        p_val = sub["num_params"].iloc[0] if "num_params" in sub.columns else 0
+        p_str = f"{p_val/1e3:.1f}k" if p_val < 1e6 else f"{p_val/1e6:.2f}M"
+
+        ax.set_title(f"{head_key}\n({p_str} params)", fontsize=9, fontweight="bold")
+        ax.set_xlabel("Epoch", fontsize=8)
+        ax.set_ylabel("Cross-Entropy Loss", fontsize=8)
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
+
+    for j in range(num_heads, nrows * ncols):
+        fig.delaxes(axes[j // ncols, j % ncols])
+
+    plot_title = title or "Train Loss vs. Validation Loss Across Epochs"
+    plt.suptitle(plot_title, fontsize=13, fontweight="bold", y=0.995)
+    plt.tight_layout()
+
+    out_path = Path(out_plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, bbox_inches="tight")
+    plt.close()
+    print(f"[PLOT] Generated Train vs. Val loss curves: {out_path}")
+
+
+def generate_generalization_gap_plot(
+    overfitting_df: pd.DataFrame,
+    out_plot_path: Union[str, Path],
+    title: Optional[str] = None,
+):
+    """Generate diagnostic chart showing Generalization Gap (Train Top-1 vs Peak Val Top-1) by parameter volume."""
+    if overfitting_df.empty:
+        return
+
+    df = overfitting_df.sort_values(by="num_params", ascending=True).copy()
+    num_heads = len(df)
+    plt.figure(figsize=(10, max(5, num_heads * 0.45 + 2)), dpi=150)
+
+    y_pos = list(range(num_heads))
+    labels = []
+    for _, row in df.iterrows():
+        p_val = row["num_params"]
+        p_str = f"{p_val/1e3:.1f}k" if p_val < 1e6 else f"{p_val/1e6:.2f}M"
+        labels.append(f"{row['head_key']} ({p_str})")
+
+    # Plot connecting dumbbell lines
+    for i, (_, row) in enumerate(df.iterrows()):
+        train = row["final_train_top1"]
+        val = row["peak_val_top1"]
+        gap = row["generalization_gap"]
+
+        # Color-code gap: green if <= 8%, orange if <= 18%, red if > 18%
+        line_color = "#2ca02c" if gap <= 8.0 else ("#ff7f0e" if gap <= 18.0 else "#d62728")
+        plt.plot([val, train], [i, i], color=line_color, linewidth=2.5, zorder=2)
+        plt.text(
+            max(train, val) + 1.2, i, f"Gap: {gap:+.1f}% ({row['diagnosis'].split()[0]})",
+            va="center", ha="left", fontsize=8, color=line_color, fontweight="bold"
+        )
+
+    plt.scatter(df["final_train_top1"], y_pos, color="#1f77b4", s=70, zorder=3, label="Final Train Top-1")
+    plt.scatter(df["peak_val_top1"], y_pos, color="#ff7f0e", s=70, zorder=3, marker="s", label="Peak Val Top-1")
+
+    plt.yticks(y_pos, labels, fontsize=8)
+    plt.xlabel("Top-1 Accuracy (%)", fontsize=11)
+    plt.ylabel("Classification Head (Parameter Volume)", fontsize=11)
+    plot_title = title or "Generalization Gap (Train vs. Val Accuracy) by Model Capacity"
+    plt.title(plot_title, fontsize=12, fontweight="bold")
+    plt.grid(True, linestyle=":", alpha=0.6, axis="x")
+    plt.legend(loc="lower right", framealpha=0.9, fontsize=9)
+    max_acc = max(df["final_train_top1"].max(), df["peak_val_top1"].max()) if not df.empty else 50
+    plt.xlim(0, min(105, max(max_acc + 30, 40)))
+    plt.tight_layout()
+
+    out_path = Path(out_plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path, bbox_inches="tight")
+    plt.close()
+    print(f"[PLOT] Generated Generalization Gap diagnostic chart: {out_path}")
