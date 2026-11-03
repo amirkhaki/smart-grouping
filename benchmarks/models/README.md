@@ -5,9 +5,9 @@ Probe classifier architectures and multi-head container supporting concurrent ev
 
 ## Interface
 - `[linear_probe.py:LinearProbe]`: Minimal linear probe classifier comprising `AdaptiveAvgPool2d((1, 1))`, `Flatten`, `BatchNorm1d(in_channels)`, and `Linear(in_channels, num_classes)`.
-- `[latent_head.py:PreActBlock]`: Pre-activation residual block module with `BatchNorm2d`, `ReLU`, 3x3 `Conv2d` layers, and optional 1x1 `Conv2d` shortcut projection.
-- `[latent_head.py:LatentHead]`: Capacity-normalized PreAct ResNet probe head consisting of stem 1x1 conv, 3-block residual body, neck, adaptive pooling, dropout, and linear classifier.
-- `[multi_head_container.py:MultiHeadClassifierContainer]`: Multi-head container module holding probe heads across slice views, architectures, and quantization states with dynamic per-head early stopping and parameter freezing.
+- `[latent_head.py:PreActBlock]`: Pre-activation residual block module with `BatchNorm2d`, `ReLU`, 3x3 `Conv2d` layers, optional 2D spatial dropout, drop-path (stochastic depth), and optional 1x1 `Conv2d` shortcut projection.
+- `[latent_head.py:LatentHead]`: Capacity-normalized PreAct ResNet probe head consisting of stem 1x1 conv, 3-block residual body with linearly ramped drop-path, neck, adaptive pooling, dropout, and linear classifier.
+- `[multi_head_container.py:MultiHeadClassifierContainer]`: Multi-head container module holding probe heads across slice views, architectures, and quantization states with configurable spatial dropout, drop-path, and dynamic per-head early stopping.
 - `[multi_head_container.py:MultiHeadClassifierContainer.freeze_head]`: Freezes parameters (`requires_grad=False`) and removes `head_key` from `active_head_keys` when validation performance plateaus.
 - `[multi_head_container.py:MultiHeadClassifierContainer.is_active]`: Returns boolean indicating if a head is currently active in training.
 - `[multi_head_container.py:MultiHeadClassifierContainer.all_frozen]`: Returns True when all registered heads have converged and been frozen.

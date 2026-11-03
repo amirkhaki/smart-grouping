@@ -281,6 +281,12 @@ def export_overfitting_analysis(
         final_val_loss = float(sub["val_loss"].iloc[-1])
         num_params = int(row_0.get("num_params", 0))
 
+        test_top1 = None
+        if not master_df.empty and "head_key" in master_df.columns:
+            m_sub = master_df[master_df["head_key"] == k]
+            if not m_sub.empty and "top1_acc" in m_sub.columns:
+                test_top1 = float(m_sub["top1_acc"].iloc[0])
+
         gen_gap = round(final_train_top1 - peak_val_top1, 2)
 
         if final_train_top1 < 40.0 and gen_gap < 8.0:
@@ -306,6 +312,7 @@ def export_overfitting_analysis(
             "final_val_loss": round(final_val_loss, 4),
             "final_val_top1": round(final_val_top1, 2),
             "peak_val_top1": round(peak_val_top1, 2),
+            "test_top1": round(test_top1, 2) if test_top1 is not None else None,
             "generalization_gap": gen_gap,
             "diagnosis": diagnosis,
         })

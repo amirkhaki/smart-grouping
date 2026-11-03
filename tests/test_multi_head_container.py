@@ -153,6 +153,28 @@ class TestMultiHeadContainer(unittest.TestCase):
         # Parameters should strictly scale with native width
         self.assertTrue(meta_ls8["num_params"] < meta_ls16["num_params"])
 
+    def test_drop_path_rates_and_metadata(self):
+        """With drop_path=0.1, every LatentHead body carries rates [0, 0.05, 0.1] and metadata records drop_path."""
+        container = MultiHeadClassifierContainer(
+            num_classes=NUM_CLASSES,
+            views=["S0", "C4"],
+            architectures=["latent_head", "linear_probe"],
+            quant_modes=["quantized"],
+            drop_path=0.1,
+        )
+
+        for head_key, head in container.heads.items():
+            meta = container.head_metadata[head_key]
+            if meta["base_arch"] == "latent_head":
+                self.assertIn("drop_path", meta)
+                self.assertAlmostEqual(meta["drop_path"], 0.1)
+                # Check linearly ramped rates across body PreActBlocks
+                self.assertAlmostEqual(head.body[0].drop_path, 0.0)
+                self.assertAlmostEqual(head.body[1].drop_path, 0.05)
+                self.assertAlmostEqual(head.body[2].drop_path, 0.1)
+            elif meta["base_arch"] == "linear_probe":
+                self.assertNotIn("drop_path", meta)
+
 
 if __name__ == "__main__":
     unittest.main()

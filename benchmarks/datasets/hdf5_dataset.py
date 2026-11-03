@@ -1,6 +1,7 @@
 """Thread-safe PyTorch Dataset reading cached ELIC latents from HDF5."""
 
 from pathlib import Path
+import hashlib
 from typing import Any, Dict, Literal, Optional, Union
 
 import h5py
@@ -27,10 +28,11 @@ class HDF5LatentDataset(Dataset):
     def __init__(
         self,
         h5_path: Union[str, Path],
-        split: Literal["train", "test", "all"] = "train",
+        split: Literal["train", "val", "test", "all"] = "train",
         in_memory: bool = False,
         load_continuous: bool = True,
         load_quantized: bool = True,
+        split_file: Optional[Union[str, Path]] = None,
     ):
         self.h5_path = Path(h5_path)
         if not self.h5_path.is_file():
@@ -40,12 +42,17 @@ class HDF5LatentDataset(Dataset):
         self.in_memory = in_memory
         self.load_continuous = load_continuous
         self.load_quantized = load_quantized
+        self.split_file = Path(split_file) if split_file is not None else None
         self._h5_file: Optional[h5py.File] = None
 
         # Inspect metadata and partition indices without keeping handle open
         with h5py.File(str(self.h5_path), mode="r") as f:
+            self.total_archive_samples = len(f["labels"])
+            h5_labels = f["labels"][:]
             is_train = f["is_train"][:]
-            self.total_archive_samples = len(is_train)
+            self.attrs: Dict[str, Any] = dict(f.attrs)
+
+        if self.split_file is None:
             if split == "train":
                 self.indices = np.where(is_train)[0]
             elif split == "test":
@@ -54,9 +61,35 @@ class HDF5LatentDataset(Dataset):
                 self.indices = np.arange(self.total_archive_samples)
             else:
                 raise ValueError(f"Unknown split: {split}. Choose 'train', 'test', or 'all'.")
+        else:
+            if not self.split_file.is_file():
+                raise FileNotFoundError(f"Split file not found: {self.split_file}")
+            npz = np.load(str(self.split_file))
+            split_n_total = int(npz["n_total"])
+            split_labels_sha = str(npz["labels_sha256"])
+            h5_labels_sha = hashlib.sha256(h5_labels.tobytes()).hexdigest()
 
-            # Cache global attributes
-            self.attrs: Dict[str, Any] = dict(f.attrs)
+            if split_n_total != self.total_archive_samples:
+                raise ValueError(
+                    f"Split file sample count mismatch: {split_n_total} vs HDF5 archive {self.total_archive_samples}"
+                )
+            if split_labels_sha != h5_labels_sha:
+                raise ValueError(
+                    f"Split file labels_sha256 mismatch ({split_labels_sha} vs {h5_labels_sha}). "
+                    "The split file was not created for this HDF5 archive."
+                )
+
+            role = npz["role"]
+            if split == "train":
+                self.indices = np.where(role == 0)[0]
+            elif split == "val":
+                self.indices = np.where(role == 1)[0]
+            elif split == "test":
+                self.indices = np.where(role == 2)[0]
+            elif split == "all":
+                self.indices = np.arange(self.total_archive_samples)
+            else:
+                raise ValueError(f"Unknown split: {split}. With split_file choose 'train', 'val', 'test', or 'all'.")
 
         self.num_samples = len(self.indices)
 

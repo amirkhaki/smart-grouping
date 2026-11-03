@@ -16,6 +16,10 @@ Benchmark execution suite for evaluating representations learned by ELIC image c
 - `[cache_latents.py:CustomDataParallel]`: DataParallel wrapper providing attribute pass-through to inner extractor module.
 - `[cache_latents.py:resolve_checkpoint]`: Resolves checkpoint path and lambda value from registry or filesystem path.
 - `[cache_latents.py:main]`: Tier-1 CLI pipeline caching continuous/quantized latents, labels, split masks, and bitrates into chunked HDF5.
+- `[make_val_split.py:assign_roles]`: Core deterministic algorithm creating leak-free, source-image-level validation holdout partitions from training samples.
+- `[make_val_split.py:main]`: CLI entrypoint generating validation split `.npz` files for HDF5 latent archives.
+- `[latent_aug.py:random_shift]`: GPU-side random spatial shift augmentation with reflect padding.
+- `[latent_aug.py:apply_latent_aug]`: GPU-side batch augmentation orchestrating random shift and CutMix.
 - `[sparsity.py:get_channel_slice]`: Maps channel index (`0..319`) to originating ELIC slice view name (`S0`-`S4`).
 - `[sparsity.py:get_channel_slice_info]`: Returns slice name and relative channel index within that slice.
 - `[sparsity.py:compute_channel_densities]`: Computes empirical non-zero activation density across 320 latent channels on quantized latents.

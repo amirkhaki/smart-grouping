@@ -96,6 +96,63 @@ class TestHDF5Dataset(unittest.TestCase):
         HDF5LatentDataset.clear_cache()
         self.assertEqual(len(HDF5LatentDataset._archive_cache), 0)
 
+    def test_split_file_selection_and_validation(self):
+        """HDF5LatentDataset with split_file filters train/val/test and verifies labels SHA256."""
+        import hashlib
+        # Read labels from H5
+        with h5py.File(str(self.h5_path), "r") as f:
+            labels = f["labels"][:]
+        labels_sha = hashlib.sha256(labels.tobytes()).hexdigest()
+
+        # Create valid npz split file (10 train, 5 val, 5 test)
+        roles = np.array([0] * 10 + [1] * 5 + [2] * 5, dtype=np.int8)
+        with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp_npz:
+            npz_path = Path(tmp_npz.name)
+            np.savez(
+                str(npz_path),
+                role=roles,
+                source_id=np.arange(len(roles), dtype=np.int32),
+                is_augmented=np.zeros(len(roles), dtype=bool),
+                val_frac=0.25,
+                seed=0,
+                n_total=len(roles),
+                labels_sha256=labels_sha,
+            )
+
+        try:
+            ds_train = HDF5LatentDataset(self.h5_path, split="train", split_file=npz_path)
+            ds_val = HDF5LatentDataset(self.h5_path, split="val", split_file=npz_path)
+            ds_test = HDF5LatentDataset(self.h5_path, split="test", split_file=npz_path)
+            ds_all = HDF5LatentDataset(self.h5_path, split="all", split_file=npz_path)
+
+            self.assertEqual(len(ds_train), 10)
+            self.assertEqual(len(ds_val), 5)
+            self.assertEqual(len(ds_test), 5)
+            self.assertEqual(len(ds_all), 20)
+
+            # Mismatched labels_sha256 must raise ValueError
+            with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as bad_tmp_npz:
+                bad_npz_path = Path(bad_tmp_npz.name)
+                np.savez(
+                    str(bad_npz_path),
+                    role=roles,
+                    source_id=np.arange(len(roles), dtype=np.int32),
+                    is_augmented=np.zeros(len(roles), dtype=bool),
+                    val_frac=0.25,
+                    seed=0,
+                    n_total=len(roles),
+                    labels_sha256="bad_sha256_hash",
+                )
+            try:
+                with self.assertRaises(ValueError):
+                    HDF5LatentDataset(self.h5_path, split="val", split_file=bad_npz_path)
+            finally:
+                if bad_npz_path.exists():
+                    bad_npz_path.unlink()
+        finally:
+            if npz_path.exists():
+                npz_path.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

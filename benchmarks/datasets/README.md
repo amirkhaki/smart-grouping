@@ -9,7 +9,7 @@ Dataset mounting, stratified deterministic partitioning, offline class balancing
 - `[caltech256.py:build_caltech256_sample_manifest]`: Scans `data_root`, performs deterministic SHA-256 hash partitioning (`split_ratio=0.80`), and balances training classes via offline augmentation up to `target_k` (default 150).
 - `[caltech256.py:Caltech256PreparedDataset]`: PyTorch `Dataset` subclass loading Caltech-256 images with clean center-crop transforms or offline train augmentation (random resized crop, flip, rotation).
 - `[caltech256.py:IMG_EXTENSIONS]`: Supported image file extension whitelist tuple.
-- `[hdf5_dataset.py:HDF5LatentDataset]`: PyTorch `Dataset` subclass reading cached float16 ELIC latents from HDF5 in SWMR mode and casting dynamically to float32 PyTorch tensors.
+- `[hdf5_dataset.py:HDF5LatentDataset]`: PyTorch `Dataset` subclass reading cached float16 ELIC latents from HDF5 in SWMR mode and casting dynamically to float32 PyTorch tensors. Supports optional `split_file` for leak-free validation splitting.
 - `[hdf5_dataset.py:HDF5LatentDataset.close]`: Closes the worker-local HDF5 file handle.
 - `[__init__.py:find_caltech256_root]`: Re-exported helper from `caltech256.py`.
 - `[__init__.py:Caltech256PreparedDataset]`: Re-exported PyTorch `Dataset` class from `caltech256.py`.

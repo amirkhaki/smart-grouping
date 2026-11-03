@@ -189,7 +189,15 @@ def main(argv=None):
         )
         f.create_dataset("labels", shape=(N,), dtype=np.int64)
         f.create_dataset("is_train", shape=(N,), dtype=bool)
+        f.create_dataset("is_augmented", shape=(N,), dtype=bool)
+        f.create_dataset("source_id", shape=(N,), dtype=np.int32)
         f.create_dataset("bitrates_bpp", shape=(N, 6), dtype=np.float32)
+
+        # Derive source_ids and is_augmented directly from samples manifest
+        unique_paths = sorted(list({str(s.filepath) for s in samples}))
+        path_to_id = {p: idx for idx, p in enumerate(unique_paths)}
+        f["is_augmented"][:] = np.array([s.is_augmented for s in samples], dtype=bool)
+        f["source_id"][:] = np.array([path_to_id[str(s.filepath)] for s in samples], dtype=np.int32)
 
         # Metadata attributes
         f.attrs["checkpoint"] = str(ckpt_path)

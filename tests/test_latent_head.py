@@ -55,6 +55,39 @@ class TestProbeModels(unittest.TestCase):
         logits = head(x_head)
         self.assertEqual(logits.shape, (2, NUM_CLASSES))
 
+    def test_preact_block_and_head_drop_path(self):
+        """PreActBlock drops residual path in train mode and preserves it in eval mode."""
+        torch.manual_seed(0)
+        block = PreActBlock(16, 16, stride=1, drop_path=0.999999)
+        x = torch.randn(4, 16, 8, 8)
+
+        # Train mode: residual branch is zeroed out by drop-path, returning shortcut x
+        block.train()
+        out_train = block(x)
+        torch.testing.assert_close(out_train, x)
+
+        # Eval mode: residual branch is kept active
+        block.eval()
+        out_eval = block(x)
+        self.assertFalse(torch.allclose(out_eval, x))
+
+        # Out-of-range drop_path raises ValueError
+        with self.assertRaises(ValueError):
+            PreActBlock(16, 16, drop_path=1.0)
+        with self.assertRaises(ValueError):
+            PreActBlock(16, 16, drop_path=-0.5)
+
+        # LatentHead forward shape and parameter parity
+        head_dp = LatentHead(in_channels=32, stem_channels=64, num_classes=10, drop_path=0.2)
+        head_base = LatentHead(in_channels=32, stem_channels=64, num_classes=10, drop_path=0.0)
+        x_lh = torch.randn(4, 32, 16, 16)
+        out_lh = head_dp(x_lh)
+        self.assertEqual(out_lh.shape, (4, 10))
+        self.assertEqual(
+            sum(p.numel() for p in head_dp.parameters()),
+            sum(p.numel() for p in head_base.parameters()),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
