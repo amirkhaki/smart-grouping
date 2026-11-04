@@ -104,24 +104,60 @@ def parse_args(argv=None):
 
 
 def resolve_checkpoint(checkpoint_arg: str, download_dir: Path) -> Tuple[Path, float]:
-    """Resolve checkpoint file path and lambda value from CLI argument."""
-    # Check if argument is a registered lambda key
+    """Resolve checkpoint file path and lambda value from CLI argument, downloading if needed."""
+    # 1. Check if argument is a registered lambda key (e.g. '0.032')
     if checkpoint_arg in CHECKPOINT_REGISTRY:
         meta = CHECKPOINT_REGISTRY[checkpoint_arg]
         ckpt_path = download_checkpoint(meta, download_dir)
         return ckpt_path, meta.lmbda
 
     p = Path(checkpoint_arg)
+    # 2. Check if file exists directly on disk
     if p.is_file():
-        # Try to infer lambda from filename
         lmbda = 0.032
         for k, meta in CHECKPOINT_REGISTRY.items():
-            if k in p.name:
+            if k in p.name or Path(meta.default_filename).name == p.name:
                 lmbda = meta.lmbda
                 break
         return p, lmbda
 
-    # Try downloading as lambda key
+    # 3. Check candidate local directories if the target already exists
+    filename = p.name
+    search_locations = [
+        download_dir / filename,
+        Path("checkpoints") / filename,
+        Path("/kaggle/working/checkpoints") / filename,
+        Path("/kaggle/input") / filename,
+    ]
+    for loc in search_locations:
+        if loc.is_file():
+            lmbda = 0.032
+            for k, meta in CHECKPOINT_REGISTRY.items():
+                if k in loc.name or Path(meta.default_filename).name == loc.name:
+                    lmbda = meta.lmbda
+                    break
+            return loc, lmbda
+
+    # 4. If not on disk, match filename or string against registered checkpoints and download
+    matched_meta = None
+    for k, meta in CHECKPOINT_REGISTRY.items():
+        reg_filename = Path(meta.default_filename).name
+        if filename == reg_filename or k == checkpoint_arg:
+            matched_meta = meta
+            break
+
+    if matched_meta is None:
+        for k, meta in CHECKPOINT_REGISTRY.items():
+            k_nodot = k.replace(".", "")
+            if k in filename or k_nodot in filename or k in checkpoint_arg:
+                matched_meta = meta
+                break
+
+    if matched_meta is not None:
+        ckpt_path = download_checkpoint(matched_meta, download_dir)
+        return ckpt_path, matched_meta.lmbda
+
+    # 5. Failed to resolve
     raise ValueError(
         f"Checkpoint argument '{checkpoint_arg}' is neither an existing file nor a valid lambda key in {list(CHECKPOINT_REGISTRY.keys())}"
     )

@@ -17,7 +17,7 @@ context: |
   Work in small steps. After each step, stop and report what changed and what you
   need from me. Do not launch training or evaluation unless I ask.
   Never invent, estimate, or round numbers; record only results from logs or output I provide.
-  This machine is not the execution environmnet so never try to run things, specially that project has large dependencies like torch.
+  This machine is not the execution environmnet so never try to run things, specially that project has large dependencies like torch, it doesn't have pytest either.
   Suggest commit messages like exp(R###): short description -- metric=value, but do not commit unless asked.
 
 rules:

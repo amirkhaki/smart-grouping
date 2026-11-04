@@ -115,6 +115,32 @@ class TestSparsityUtils(unittest.TestCase):
         self.assertIn("ch_75", summary)
         self.assertIn("S3", summary)
 
+    def test_resolve_checkpoint_robustness(self):
+        """resolve_checkpoint should resolve both raw lambda keys and absolute cache paths."""
+        from pathlib import Path
+        from unittest.mock import patch
+        from benchmarks.cache_latents import resolve_checkpoint
+
+        with patch("benchmarks.cache_latents.download_checkpoint", return_value=Path("/tmp/elic_0032.pth.tar")) as mock_dl:
+            # 1. Lambda key directly
+            p, lmbda = resolve_checkpoint("0.032", Path("/tmp"))
+            self.assertEqual(lmbda, 0.032)
+            self.assertEqual(p, Path("/tmp/elic_0032.pth.tar"))
+
+            # 2. Remote path from HDF5 cache attributes
+            p2, lmbda2 = resolve_checkpoint("/kaggle/working/checkpoints/elic_0032.pth.tar", Path("/tmp"))
+            self.assertEqual(lmbda2, 0.032)
+            self.assertEqual(p2, Path("/tmp/elic_0032.pth.tar"))
+
+            # 3. Filename only
+            p3, lmbda3 = resolve_checkpoint("elic_0032.pth.tar", Path("/tmp"))
+            self.assertEqual(lmbda3, 0.032)
+            self.assertEqual(p3, Path("/tmp/elic_0032.pth.tar"))
+
+        # 4. Invalid key/path raises ValueError
+        with self.assertRaises(ValueError):
+            resolve_checkpoint("non_existent_unknown_checkpoint.tar", Path("/tmp"))
+
 
 if __name__ == "__main__":
     unittest.main()

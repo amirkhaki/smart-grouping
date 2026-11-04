@@ -551,9 +551,20 @@ def main(argv=None):
             ckpt_arg = args.checkpoint
         else:
             with h5py.File(str(h5_path), "r") as f:
-                ckpt_arg = str(f.attrs.get("checkpoint", f.attrs.get("lambda", "0.032")))
+                if "lambda" in f.attrs:
+                    raw_lmbda = f.attrs["lambda"]
+                    if isinstance(raw_lmbda, (bytes, bytearray)):
+                        raw_lmbda = raw_lmbda.decode("utf-8")
+                    ckpt_arg = str(raw_lmbda)
+                elif "checkpoint" in f.attrs:
+                    raw_ckpt = f.attrs["checkpoint"]
+                    if isinstance(raw_ckpt, (bytes, bytearray)):
+                        raw_ckpt = raw_ckpt.decode("utf-8")
+                    ckpt_arg = str(raw_ckpt)
+                else:
+                    ckpt_arg = "0.032"
 
-        ckpt_dir = Path("checkpoints")
+        ckpt_dir = Path(args.out_dir) / "checkpoints" if args.out_dir else Path("checkpoints")
         ckpt_path, _ = resolve_checkpoint(ckpt_arg, ckpt_dir)
         print(f"\n[RATE] Loading frozen ELIC model from: {ckpt_path} on {args.device}...")
         extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=args.device)
