@@ -346,31 +346,63 @@ def compute_channel_symbol_density_from_latents(
         with torch.no_grad():
             for i in range(0, len(indices), batch_size):
                 batch_idx = indices[i : i + batch_size]
-                y_batch = torch.from_numpy(ds[batch_idx].astype(np.float32)).to(device)
-                B, C, H_y, W_y = y_batch.shape
+                if np.all(np.diff(batch_idx) == 1):
+                    raw_batch = ds[batch_idx[0] : batch_idx[-1] + 1]
+                else:
+                    sorted_order = np.argsort(batch_idx)
+                    sorted_idx = batch_idx[sorted_order]
+                    raw_batch = ds[sorted_idx]
+                    inv_order = np.empty_like(sorted_order)
+                    inv_order[sorted_order] = np.arange(len(sorted_order))
+                    raw_batch = raw_batch[inv_order]
 
-                # 1. Hyperprior forward pass
-                hyper_latents = inner_model.h_a(y_batch)
-                hyper_latents_quant = inner_model.quantizer.quantize(hyper_latents, "ste")
-                ctx_params_anchor = inner_model.h_s(hyper_latents_quant)
+                y = torch.from_numpy(raw_batch).float().to(device)
+                B, C, H_y, W_y = y.size()
 
-                # 2. Sequential contextual slice decoding
-                ctx_params_anchor_split = torch.split(ctx_params_anchor, inner_model.groups[1:], dim=1)
-                anchor_split = torch.split(y_batch, inner_model.groups[1:], dim=1)
-                non_anchor_split = torch.split(y_batch, inner_model.groups[1:], dim=1)
+                # 1. Hyperprior forward pass and deterministic rounding
+                z = inner_model.h_a(y)
+                z_offset = inner_model.entropy_bottleneck._get_medians()
+                z_hat = torch.round(z - z_offset) + z_offset
+
+                # 2. Spatial parameter prior synthesis
+                latent_means, latent_scales = inner_model.h_s(z_hat).chunk(2, 1)
+
+                # 3. Checkerboard pattern masks
+                anchor = torch.zeros_like(y)
+                non_anchor = torch.zeros_like(y)
+                anchor[:, :, 0::2, 0::2] = y[:, :, 0::2, 0::2]
+                anchor[:, :, 1::2, 1::2] = y[:, :, 1::2, 1::2]
+                non_anchor[:, :, 0::2, 1::2] = y[:, :, 0::2, 1::2]
+                non_anchor[:, :, 1::2, 0::2] = y[:, :, 1::2, 0::2]
+
+                y_slices = torch.split(y, inner_model.groups[1:], 1)
+                anchor_split = torch.split(anchor, inner_model.groups[1:], 1)
+                non_anchor_split = torch.split(non_anchor, inner_model.groups[1:], 1)
+                ctx_params_anchor_split = torch.split(
+                    torch.zeros(B, C * 2, H_y, W_y, device=device),
+                    [2 * g for g in inner_model.groups[1:]],
+                    1,
+                )
 
                 y_hat_slices = []
                 batch_channel_densities = []
 
-                for slice_index in range(inner_model.num_slices):
-                    y_slice = anchor_split[slice_index]
+                # 4. Contextual slices
+                for slice_index, y_slice in enumerate(y_slices):
+                    if slice_index == 0:
+                        support = torch.concat([latent_means, latent_scales], dim=1)
+                    elif slice_index == 1:
+                        support_slices = y_hat_slices[0]
+                        support_slices_ch = inner_model.cc_transforms[slice_index - 1](support_slices)
+                        mean_ch, scale_ch = support_slices_ch.chunk(2, 1)
+                        support = torch.concat([mean_ch, scale_ch, latent_means, latent_scales], dim=1)
+                    else:
+                        support_slices = torch.concat([y_hat_slices[0], y_hat_slices[slice_index - 1]], dim=1)
+                        support_slices_ch = inner_model.cc_transforms[slice_index - 1](support_slices)
+                        mean_ch, scale_ch = support_slices_ch.chunk(2, 1)
+                        support = torch.concat([mean_ch, scale_ch, latent_means, latent_scales], dim=1)
 
                     # Step 1: Anchor decoding
-                    if slice_index == 0:
-                        support = ctx_params_anchor_split[slice_index]
-                    else:
-                        support = torch.concat([ctx_params_anchor_split[slice_index], *y_hat_slices], dim=1)
-
                     means_anchor, scales_anchor = inner_model.ParamAggregation[slice_index](
                         torch.concat([ctx_params_anchor_split[slice_index], support], dim=1)
                     ).chunk(2, 1)
