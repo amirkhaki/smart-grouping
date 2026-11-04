@@ -180,7 +180,7 @@ def main(argv=None):
     print(f"[INIT] Using Caltech-256 data root: {data_root}")
 
     # 2. Resolve & download checkpoint
-    ckpt_dir = out_dir / "checkpoints" if not Path("checkpoints").exists() else Path("checkpoints")
+    ckpt_dir = Path("/tmp/checkpoints") if Path("/tmp").is_dir() else (out_dir / "checkpoints")
     ckpt_path, lmbda_val = resolve_checkpoint(args.checkpoint, ckpt_dir)
     print(f"[INIT] Loaded checkpoint: {ckpt_path} (lambda={lmbda_val})")
 
