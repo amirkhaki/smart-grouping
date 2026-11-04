@@ -125,6 +125,7 @@ def resolve_checkpoint(checkpoint_arg: str, download_dir: Path) -> Tuple[Path, f
     filename = p.name
     search_locations = [
         download_dir / filename,
+        Path("/tmp/checkpoints") / filename,
         Path("checkpoints") / filename,
         Path("/kaggle/working/checkpoints") / filename,
         Path("/kaggle/input") / filename,

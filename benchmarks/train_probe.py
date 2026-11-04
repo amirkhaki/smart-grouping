@@ -581,7 +581,7 @@ def main(argv=None):
                 else:
                     ckpt_arg = "0.032"
 
-        ckpt_dir = Path(args.out_dir) / "checkpoints" if args.out_dir else Path("checkpoints")
+        ckpt_dir = Path("/tmp/checkpoints") if Path("/tmp").is_dir() else Path("checkpoints")
         ckpt_path, _ = resolve_checkpoint(ckpt_arg, ckpt_dir)
         print(f"\n[RATE] Loading frozen ELIC model from: {ckpt_path} on {args.device}...")
         extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=args.device)
@@ -636,7 +636,7 @@ def main(argv=None):
                 else:
                     ckpt_arg = "0.032"
 
-        ckpt_dir = Path(args.out_dir) / "checkpoints" if args.out_dir else Path("checkpoints")
+        ckpt_dir = Path("/tmp/checkpoints") if Path("/tmp").is_dir() else Path("checkpoints")
         ckpt_path, _ = resolve_checkpoint(ckpt_arg, ckpt_dir)
         print(f"\n[SYMBOL-DENSITY] Loading frozen ELIC model from: {ckpt_path} on {args.device}...")
         extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=args.device)

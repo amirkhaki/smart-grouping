@@ -153,8 +153,9 @@ runs:
             COMPLETE|ERROR|CANCEL_REQUESTED|CANCEL_ACKNOWLEDGED)
               rm -rf out && mkdir out
               kaggle kernels output "$ID" -p out || true
-              # Delete large .h5 cache file immediately to protect runner disk space
-              rm -f out/*.h5
+              # Delete large .h5 cache file and checkpoint weights immediately to protect runner disk space and artifact size
+              rm -f out/*.h5 out/*.pth*
+              rm -rf out/checkpoints
               if [ "$(jq -r .github_run_id out/run_meta.json 2>/dev/null)" = "$GITHUB_RUN_ID" ]; then
                 if [ "$state" = "COMPLETE" ]; then exit 0; fi
                 echo "::error::Kaggle run ended with $state"

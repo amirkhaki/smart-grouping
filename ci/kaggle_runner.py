@@ -194,6 +194,14 @@ except BaseException as e:
     raise
 
 finally:
+    # Clean up checkpoint weights and temporary directories from working dir to prevent bloating artifacts
+    shutil.rmtree(WORK / "checkpoints", ignore_errors=True)
+    for p in WORK.glob("*.pth*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
     # Record output files and bytes
     out_files = 0
     out_bytes = 0
