@@ -285,6 +285,202 @@ def format_rate_summary(
     return "\n".join(lines)
 
 
+def compute_channel_symbol_density_from_latents(
+    extractor: Any,
+    h5_source: Union[str, Path, h5py.File],
+    split: str = "train",
+    batch_size: int = 128,
+    max_samples: int = 2000,
+    device: str = "cuda",
+) -> np.ndarray:
+    """Compute empirical non-zero integer symbol density P(round(y - mu) != 0) per channel.
+
+    Evaluates the discrete symbols q = round(y - mu) that the arithmetic coder transmits
+    over the channel, without the continuous mean mu added back during reconstruction.
+
+    Args:
+        extractor: Initialized ELICFeatureExtractor or TestModel containing hyperprior/context nets.
+        h5_source: Path to HDF5 cache containing 'latents_continuous' dataset.
+        split: Split to sample from ('train', 'test', or 'all').
+        batch_size: Batch size for batched entropy forward inference.
+        max_samples: Number of samples to evaluate across.
+        device: Torch device for model execution.
+
+    Returns:
+        np.ndarray of shape (320,) containing symbol densities in [0.0, 1.0].
+    """
+    import torch
+
+    inner_model = getattr(extractor, "model", extractor)
+    inner_model.eval()
+
+    should_close = False
+    if isinstance(h5_source, (str, Path)):
+        f = h5py.File(str(h5_source), "r", swmr=True)
+        should_close = True
+    else:
+        f = h5_source
+
+    try:
+        if "latents_continuous" not in f:
+            raise KeyError(f"Archive missing 'latents_continuous'. Keys present: {list(f.keys())}")
+
+        ds = f["latents_continuous"]
+        is_train = f["is_train"][:] if "is_train" in f else np.ones(ds.shape[0], dtype=bool)
+
+        if split == "train":
+            split_mask = is_train
+        elif split == "test":
+            split_mask = ~is_train
+        else:
+            split_mask = np.ones(len(is_train), dtype=bool)
+
+        indices = np.where(split_mask)[0]
+        if max_samples and len(indices) > max_samples:
+            indices = indices[:max_samples]
+
+        num_channels = ds.shape[1]  # 320
+        densities_sum = np.zeros(num_channels, dtype=np.float64)
+        processed = 0
+
+        with torch.no_grad():
+            for i in range(0, len(indices), batch_size):
+                batch_idx = indices[i : i + batch_size]
+                y_batch = torch.from_numpy(ds[batch_idx].astype(np.float32)).to(device)
+                B, C, H_y, W_y = y_batch.shape
+
+                # 1. Hyperprior forward pass
+                hyper_latents = inner_model.h_a(y_batch)
+                hyper_latents_quant = inner_model.quantizer.quantize(hyper_latents, "ste")
+                ctx_params_anchor = inner_model.h_s(hyper_latents_quant)
+
+                # 2. Sequential contextual slice decoding
+                ctx_params_anchor_split = torch.split(ctx_params_anchor, inner_model.groups[1:], dim=1)
+                anchor_split = torch.split(y_batch, inner_model.groups[1:], dim=1)
+                non_anchor_split = torch.split(y_batch, inner_model.groups[1:], dim=1)
+
+                y_hat_slices = []
+                batch_channel_densities = []
+
+                for slice_index in range(inner_model.num_slices):
+                    y_slice = anchor_split[slice_index]
+
+                    # Step 1: Anchor decoding
+                    if slice_index == 0:
+                        support = ctx_params_anchor_split[slice_index]
+                    else:
+                        support = torch.concat([ctx_params_anchor_split[slice_index], *y_hat_slices], dim=1)
+
+                    means_anchor, scales_anchor = inner_model.ParamAggregation[slice_index](
+                        torch.concat([ctx_params_anchor_split[slice_index], support], dim=1)
+                    ).chunk(2, 1)
+
+                    y_a_quant = torch.round(anchor_split[slice_index] - means_anchor) + means_anchor
+                    y_a_quant[:, :, 0::2, 1::2] = 0
+                    y_a_quant[:, :, 1::2, 0::2] = 0
+
+                    # Step 2: Non-anchor decoding
+                    masked_ctx = inner_model.context_prediction[slice_index](y_a_quant)
+                    means_non_anchor, scales_non_anchor = inner_model.ParamAggregation[slice_index](
+                        torch.concat([masked_ctx, support], dim=1)
+                    ).chunk(2, 1)
+
+                    y_na_quant = torch.round(non_anchor_split[slice_index] - means_non_anchor) + means_non_anchor
+                    y_na_quant[:, :, 0::2, 0::2] = 0
+                    y_na_quant[:, :, 1::2, 1::2] = 0
+
+                    y_hat_slice = y_a_quant + y_na_quant
+                    y_hat_slices.append(y_hat_slice)
+
+                    # Full checkerboard mean mu for this slice
+                    means_full = torch.zeros_like(y_slice)
+                    means_full[:, :, 0::2, 0::2] = means_anchor[:, :, 0::2, 0::2]
+                    means_full[:, :, 1::2, 1::2] = means_anchor[:, :, 1::2, 1::2]
+                    means_full[:, :, 0::2, 1::2] = means_non_anchor[:, :, 0::2, 1::2]
+                    means_full[:, :, 1::2, 0::2] = means_non_anchor[:, :, 1::2, 0::2]
+
+                    # True discrete transmitted symbol: q = round(y - mu)
+                    q_slice = torch.round(y_slice - means_full)
+                    # Fraction of non-zero symbols across spatial dimensions (H_y, W_y)
+                    ch_density_slice = (q_slice != 0).float().mean(dim=(2, 3))
+                    batch_channel_densities.append(ch_density_slice.detach().cpu())
+
+                batch_densities = torch.cat(batch_channel_densities, dim=1).numpy()  # (B, 320)
+                densities_sum += batch_densities.sum(axis=0)
+                processed += B
+
+        mean_channel_densities = densities_sum / max(processed, 1)
+        return mean_channel_densities
+
+    finally:
+        if should_close:
+            f.close()
+
+
+def rank_channels_by_symbol_density(symbol_densities: np.ndarray) -> List[Dict[str, Any]]:
+    """Rank channels from highest non-zero symbol density to lowest.
+
+    Returns:
+        List of dicts with keys: rank, channel, slice, rel_idx, symbol_density.
+    """
+    sorted_indices = np.argsort(-symbol_densities)
+    ranked = []
+    for rank, ch_idx in enumerate(sorted_indices, start=1):
+        slice_name, rel_idx = get_channel_slice_info(ch_idx)
+        density = float(symbol_densities[ch_idx])
+        ranked.append({
+            "rank": rank,
+            "channel": int(ch_idx),
+            "slice": slice_name,
+            "rel_idx": int(rel_idx),
+            "symbol_density": round(density, 6),
+        })
+    return ranked
+
+
+def format_symbol_density_summary(
+    ranked_channels: List[Dict[str, Any]],
+    top_k_list: List[int] = (8, 16, 32, 64, 128),
+) -> str:
+    """Format an informative terminal summary report of channel symbol density rankings."""
+    lines = []
+    lines.append("=" * 80)
+    lines.append("              ELIC PER-CHANNEL TRANSMITTED SYMBOL DENSITY RANKING")
+    lines.append("=" * 80)
+
+    # 1. Summary of Top-K subsets
+    lines.append("\n[TOP-K SYMBOL DENSITY CHANNEL SUBSETS SUMMARY]")
+    for k in top_k_list:
+        sub = ranked_channels[:k]
+        channels_list = [r["channel"] for r in sub]
+        avg_density = sum(r["symbol_density"] for r in sub) / max(len(sub), 1)
+
+        # Slice distribution breakdown
+        slice_counts: Dict[str, int] = {}
+        for r in sub:
+            slice_counts[r["slice"]] = slice_counts.get(r["slice"], 0) + 1
+        dist_str = ", ".join(f"{s}: {c} ({c/k*100:.1f}%)" for s, c in sorted(slice_counts.items()))
+
+        lines.append(f"\n  Top {k} Highest Symbol-Density Channels (Total: {k}):")
+        lines.append(f"    Mean Symbol Density:  {avg_density:.4f} ({avg_density*100:.2f}%)")
+        lines.append(f"    Slice Distribution:   {dist_str}")
+        lines.append(f"    Channel Indices:      {channels_list}")
+
+    # 2. Detailed Table for Top 32 channels
+    max_table_rows = min(len(ranked_channels), 32)
+    lines.append(f"\n[DETAILED RANKING (Top {max_table_rows} Channels)]")
+    lines.append(f"  {'Rank':<6} {'Channel':<9} {'Slice':<8} {'Slice Rel Idx':<15} {'Symbol Density':<16}")
+    lines.append("  " + "-" * 60)
+
+    for r in ranked_channels[:max_table_rows]:
+        lines.append(
+            f"  #{r['rank']:<5} ch_{r['channel']:<6} {r['slice']:<8} "
+            f"+{r['rel_idx']:<14} {r['symbol_density']:>10.6f} ({r['symbol_density']*100:.2f}%)"
+        )
+
+    lines.append("=" * 80)
+    return "\n".join(lines)
+
 
 def compute_channel_densities(
     h5_source: Union[str, Path, h5py.File],

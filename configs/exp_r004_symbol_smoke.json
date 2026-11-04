@@ -1,0 +1,12 @@
+{
+  "run_id": "R004",
+  "tier": 1,
+  "description": "Tier-1 Smoke test verifying symbol density estimation and probe execution pipeline",
+  "command": "python -m benchmarks.train_probe --symbol-density 8 16 --arch latent_head --stem-channels 256 --epochs 1 --batch-size 32 --val-split /kaggle/working/val_split.npz --symbol-density-samples 100 --out-dir /kaggle/working",
+  "checkpoint": "0.032",
+  "symbol_density": [8, 16],
+  "symbol_density_samples": 100,
+  "epochs": 1,
+  "batch_size": 32,
+  "seed": 42
+}

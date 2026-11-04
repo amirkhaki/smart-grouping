@@ -6,10 +6,12 @@ import numpy as np
 from benchmarks.sparsity import (
     format_density_summary,
     format_rate_summary,
+    format_symbol_density_summary,
     get_channel_slice,
     get_channel_slice_info,
     rank_channels_by_density,
     rank_channels_by_rate,
+    rank_channels_by_symbol_density,
 )
 
 
@@ -140,6 +142,54 @@ class TestSparsityUtils(unittest.TestCase):
         # 4. Invalid key/path raises ValueError
         with self.assertRaises(ValueError):
             resolve_checkpoint("non_existent_unknown_checkpoint.tar", Path("/tmp"))
+
+    def test_rank_channels_by_symbol_density(self):
+        """Symbol density ranking must sort channels in descending order of non-zero frequency."""
+        mock_densities = np.zeros(320)
+        mock_densities[5] = 0.45    # in S0
+        mock_densities[100] = 0.82  # in S3
+        mock_densities[250] = 0.12  # in S4
+
+        ranked = rank_channels_by_symbol_density(mock_densities)
+        self.assertEqual(len(ranked), 320)
+
+        # Highest density first
+        self.assertEqual(ranked[0]["channel"], 100)
+        self.assertEqual(ranked[0]["slice"], "S3")
+        self.assertAlmostEqual(ranked[0]["symbol_density"], 0.82)
+
+        # Second highest
+        self.assertEqual(ranked[1]["channel"], 5)
+        self.assertEqual(ranked[1]["slice"], "S0")
+        self.assertAlmostEqual(ranked[1]["symbol_density"], 0.45)
+
+        # Third highest
+        self.assertEqual(ranked[2]["channel"], 250)
+        self.assertEqual(ranked[2]["slice"], "S4")
+        self.assertAlmostEqual(ranked[2]["symbol_density"], 0.12)
+
+    def test_format_symbol_density_summary(self):
+        """Symbol density summary report must contain mean density and slice distribution."""
+        mock_densities = np.zeros(320)
+        mock_densities[5] = 0.45
+        mock_densities[100] = 0.82
+
+        ranked = rank_channels_by_symbol_density(mock_densities)
+        summary = format_symbol_density_summary(ranked, top_k_list=[8, 16])
+
+        self.assertIn("ELIC PER-CHANNEL TRANSMITTED SYMBOL DENSITY RANKING", summary)
+        self.assertIn("Top 8 Highest Symbol-Density Channels", summary)
+        self.assertIn("Mean Symbol Density:", summary)
+        self.assertIn("ch_100", summary)
+        self.assertIn("S3", summary)
+
+    def test_symbol_density_bounds(self):
+        """Mock symbol density values must strictly satisfy 0.0 <= s_c <= 1.0."""
+        mock_densities = np.clip(np.random.RandomState(42).randn(320) * 0.2 + 0.5, 0.0, 1.0)
+        ranked = rank_channels_by_symbol_density(mock_densities)
+        for r in ranked:
+            self.assertGreaterEqual(r["symbol_density"], 0.0)
+            self.assertLessEqual(r["symbol_density"], 1.0)
 
 
 if __name__ == "__main__":

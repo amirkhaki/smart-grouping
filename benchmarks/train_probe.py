@@ -64,6 +64,7 @@ from benchmarks.evaluate import (
     generate_loss_curves_plot,
     generate_pareto_plot,
     generate_stem_ablation_plot,
+    generate_symbol_density_plot,
     generate_top_rate_plot,
 )
 from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
@@ -71,11 +72,14 @@ from benchmarks.profiler import ExecutionProfiler
 from benchmarks.sparsity import (
     compute_channel_densities,
     compute_channel_rates_from_latents,
+    compute_channel_symbol_density_from_latents,
     format_density_summary,
     format_rate_summary,
+    format_symbol_density_summary,
     get_channel_slice,
     rank_channels_by_density,
     rank_channels_by_rate,
+    rank_channels_by_symbol_density,
 )
 
 
@@ -196,6 +200,19 @@ def parse_args(argv=None):
         type=int,
         default=2000,
         help="Maximum training samples used for on-the-fly per-channel rate estimation (default: 2000).",
+    )
+    parser.add_argument(
+        "--symbol-density",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Evaluate top-K highest symbol-density channels (e.g. 8 16 32 64 128) based on P(round(y - mu) != 0).",
+    )
+    parser.add_argument(
+        "--symbol-density-samples",
+        type=int,
+        default=2000,
+        help="Maximum training samples used for on-the-fly symbol density estimation (default: 2000).",
     )
     parser.add_argument(
         "--checkpoint",
@@ -597,8 +614,63 @@ def main(argv=None):
             indices = [r["channel"] for r in ranked_by_rate[:k]]
             custom_subsets[f"TR{k}"] = indices
 
+    # 2c. Handle Symbol-Density Channel Subsets (P(round(y - mu) != 0) ranking)
+    if args.symbol_density:
+        from benchmarks.cache_latents import resolve_checkpoint
+        from benchmarks.elic_extractor import ELICFeatureExtractor
+
+        if args.checkpoint is not None:
+            ckpt_arg = args.checkpoint
+        else:
+            with h5py.File(str(h5_path), "r") as f:
+                if "lambda" in f.attrs:
+                    raw_lmbda = f.attrs["lambda"]
+                    if isinstance(raw_lmbda, (bytes, bytearray)):
+                        raw_lmbda = raw_lmbda.decode("utf-8")
+                    ckpt_arg = str(raw_lmbda)
+                elif "checkpoint" in f.attrs:
+                    raw_ckpt = f.attrs["checkpoint"]
+                    if isinstance(raw_ckpt, (bytes, bytearray)):
+                        raw_ckpt = raw_ckpt.decode("utf-8")
+                    ckpt_arg = str(raw_ckpt)
+                else:
+                    ckpt_arg = "0.032"
+
+        ckpt_dir = Path(args.out_dir) / "checkpoints" if args.out_dir else Path("checkpoints")
+        ckpt_path, _ = resolve_checkpoint(ckpt_arg, ckpt_dir)
+        print(f"\n[SYMBOL-DENSITY] Loading frozen ELIC model from: {ckpt_path} on {args.device}...")
+        extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=args.device)
+
+        print(f"[SYMBOL-DENSITY] Computing empirical per-channel symbol densities P(round(y - mu) != 0) across up to {args.symbol_density_samples} training latents...")
+        symbol_densities = compute_channel_symbol_density_from_latents(
+            extractor,
+            h5_path,
+            split="train",
+            batch_size=args.batch_size,
+            max_samples=args.symbol_density_samples,
+            device=args.device,
+        )
+        ranked_by_symbol_density = rank_channels_by_symbol_density(symbol_densities)
+
+        # Print the detailed symbol density summary table
+        print(format_symbol_density_summary(ranked_by_symbol_density, top_k_list=args.symbol_density))
+
+        # Save symbol density ranking artifacts
+        sd_csv = out_dir / "channel_symbol_density_ranking.csv"
+        sd_json = out_dir / "channel_symbol_density_ranking.json"
+        pd.DataFrame(ranked_by_symbol_density).to_csv(sd_csv, index=False)
+        with open(sd_json, "w") as f:
+            json.dump(ranked_by_symbol_density, f, indent=2)
+        print(f"[SYMBOL-DENSITY] Saved channel symbol density ranking to: {sd_csv}")
+
+        if custom_subsets is None:
+            custom_subsets = {}
+        for k in args.symbol_density:
+            indices = [r["channel"] for r in ranked_by_symbol_density[:k]]
+            custom_subsets[f"SD{k}"] = indices
+
     # 3. Filter selections & probe model configuration
-    has_custom = (args.least_sparse is not None or args.top_rate is not None)
+    has_custom = (args.least_sparse is not None or args.top_rate is not None or args.symbol_density is not None)
     arch_filter = None if args.arch == "all" else [args.arch]
     if has_custom and args.arch == "all":
         arch_filter = ["latent_head"]
@@ -950,7 +1022,14 @@ def main(argv=None):
             meta = raw_container.head_metadata[k]
             spec = meta.get("slice_spec")
             view_name = str(meta.get("slice_name", k))
-            category = spec.category if spec is not None else ("top_rate" if view_name.startswith("TR") else "least_sparse")
+            if spec is not None:
+                category = spec.category
+            elif view_name.startswith("TR"):
+                category = "top_rate"
+            elif view_name.startswith("SD"):
+                category = "symbol_density"
+            else:
+                category = "least_sparse"
             is_frozen = not raw_container.is_active(k)
 
             history_records.append({
@@ -1053,7 +1132,12 @@ def main(argv=None):
             in_channels = spec.num_channels
             bpp = slice_bpp_map.get(view, 0.0)
         else:
-            category = "top_rate" if str(view).startswith("TR") else "least_sparse"
+            if str(view).startswith("TR"):
+                category = "top_rate"
+            elif str(view).startswith("SD"):
+                category = "symbol_density"
+            else:
+                category = "least_sparse"
             in_channels = meta.get("in_channels", len(channel_indices) if channel_indices else 0)
             if channel_indices:
                 bpp = bpp_z + sum(
@@ -1180,6 +1264,11 @@ def main(argv=None):
     if "top_rate" in df["category"].values:
         tr_plot = out_dir / "top_rate_accuracy.png"
         generate_top_rate_plot(df, tr_plot)
+
+    # If symbol-density channels were evaluated, generate symbol-density plot
+    if "symbol_density" in df["category"].values:
+        sd_plot = out_dir / "symbol_density_accuracy.png"
+        generate_symbol_density_plot(df, sd_plot)
 
     print("\n[BENCHMARK COMPLETE] Summary of Top-1 Accuracies:")
     display_cols = ["view", "category", "arch", "quant"]

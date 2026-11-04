@@ -1,0 +1,12 @@
+{
+  "run_id": "R005",
+  "tier": 2,
+  "description": "Tier-2 Signal verification of channel symbol density monotonicity and distribution across 1,000 cached training samples",
+  "command": "python -m benchmarks.train_probe --symbol-density 8 16 32 64 128 --arch latent_head --stem-channels 256 --epochs 2 --batch-size 128 --val-split /kaggle/working/val_split.npz --symbol-density-samples 1000 --out-dir /kaggle/working",
+  "checkpoint": "0.032",
+  "symbol_density": [8, 16, 32, 64, 128],
+  "symbol_density_samples": 1000,
+  "epochs": 2,
+  "batch_size": 128,
+  "seed": 42
+}
