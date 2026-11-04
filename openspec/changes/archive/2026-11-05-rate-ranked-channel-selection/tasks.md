@@ -9,12 +9,12 @@
 
 ## 2. Runs
 
-- [ ] 2.1 R001 Smoke test on synthetic latents verifying rate extraction pipeline | config: configs/exp_r001_smoke.json | tier: 1 | done when: row in research/runs.jsonl
-- [ ] 2.2 R002 Signal verification of channel rate monotonicity on 1,000 cached training samples | config: configs/exp_r002_signal.json | tier: 2 | done when: row in research/runs.jsonl
-- [ ] 2.3 R003 Full probe evaluation across TR8, TR16, TR32, TR64, TR128 (30 epochs, leak-free validation split) | config: configs/exp_r003_top_rate_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
+- [x] 2.1 R001 Smoke test on synthetic latents verifying rate extraction pipeline | config: configs/exp_r001_smoke.json | tier: 1 | done when: row in research/runs.jsonl
+- [x] 2.2 R002 Signal verification of channel rate monotonicity on 1,000 cached training samples | config: configs/exp_r002_signal.json | tier: 2 | done when: row in research/runs.jsonl
+- [x] 2.3 R003 Full probe evaluation across TR8, TR16, TR32, TR64, TR128 (30 epochs, leak-free validation split) | config: configs/exp_r003_top_rate_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
 
 ## 3. Close-out
 
-- [ ] 3.1 Write analysis.md from logged runs
-- [ ] 3.2 Update research/findings.md
-- [ ] 3.3 Write decision.md
+- [x] 3.1 Write analysis.md from logged runs
+- [x] 3.2 Update research/findings.md
+- [x] 3.3 Write decision.md
