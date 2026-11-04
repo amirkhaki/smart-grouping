@@ -13,6 +13,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import h5py
 import numpy as np
 import pandas as pd
 import torch
