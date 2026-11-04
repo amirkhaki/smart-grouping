@@ -63,14 +63,18 @@ from benchmarks.evaluate import (
     generate_loss_curves_plot,
     generate_pareto_plot,
     generate_stem_ablation_plot,
+    generate_top_rate_plot,
 )
 from benchmarks.models.multi_head_container import MultiHeadClassifierContainer
 from benchmarks.profiler import ExecutionProfiler
 from benchmarks.sparsity import (
     compute_channel_densities,
+    compute_channel_rates_from_latents,
     format_density_summary,
+    format_rate_summary,
     get_channel_slice,
     rank_channels_by_density,
+    rank_channels_by_rate,
 )
 
 
@@ -178,6 +182,25 @@ def parse_args(argv=None):
         nargs="+",
         default=None,
         help="Evaluate top-K least sparse channels (e.g. 8 16 32) instead of standard slice views.",
+    )
+    parser.add_argument(
+        "--top-rate",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Evaluate top-K highest bitrate channels (e.g. 8 16 32 64 128) based on -log2 p likelihoods.",
+    )
+    parser.add_argument(
+        "--rate-samples",
+        type=int,
+        default=2000,
+        help="Maximum training samples used for on-the-fly per-channel rate estimation (default: 2000).",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="ELIC Checkpoint lambda or path for likelihood calculation (default: inferred from HDF5 archive).",
     )
     parser.add_argument(
         "--stem-channels",
@@ -518,17 +541,62 @@ def main(argv=None):
             indices = [r["channel"] for r in ranked_channels[:k]]
             custom_subsets[f"LS{k}"] = indices
 
+    # 2b. Handle Top-Rate Channel Subsets (-log2 p likelihood ranking)
+    if args.top_rate:
+        from benchmarks.cache_latents import resolve_checkpoint
+        from benchmarks.elic_extractor import ELICFeatureExtractor
+
+        if args.checkpoint is not None:
+            ckpt_arg = args.checkpoint
+        else:
+            with h5py.File(str(h5_path), "r") as f:
+                ckpt_arg = str(f.attrs.get("checkpoint", f.attrs.get("lambda", "0.032")))
+
+        ckpt_dir = Path("checkpoints")
+        ckpt_path, _ = resolve_checkpoint(ckpt_arg, ckpt_dir)
+        print(f"\n[RATE] Loading frozen ELIC model from: {ckpt_path} on {args.device}...")
+        extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=args.device)
+
+        print(f"[RATE] Computing empirical per-channel transmission bitrates (-log2 p) across up to {args.rate_samples} training latents...")
+        channel_rates = compute_channel_rates_from_latents(
+            extractor,
+            h5_path,
+            split="train",
+            batch_size=args.batch_size,
+            max_samples=args.rate_samples,
+            device=args.device,
+        )
+        ranked_by_rate = rank_channels_by_rate(channel_rates)
+
+        # Print the detailed rate summary table
+        print(format_rate_summary(ranked_by_rate, top_k_list=args.top_rate))
+
+        # Save rate ranking artifacts
+        rate_csv = out_dir / "channel_rate_ranking.csv"
+        rate_json = out_dir / "channel_rate_ranking.json"
+        pd.DataFrame(ranked_by_rate).to_csv(rate_csv, index=False)
+        with open(rate_json, "w") as f:
+            json.dump(ranked_by_rate, f, indent=2)
+        print(f"[RATE] Saved channel rate ranking to: {rate_csv}")
+
+        if custom_subsets is None:
+            custom_subsets = {}
+        for k in args.top_rate:
+            indices = [r["channel"] for r in ranked_by_rate[:k]]
+            custom_subsets[f"TR{k}"] = indices
+
     # 3. Filter selections & probe model configuration
+    has_custom = (args.least_sparse is not None or args.top_rate is not None)
     arch_filter = None if args.arch == "all" else [args.arch]
-    if args.least_sparse and args.arch == "all":
+    if has_custom and args.arch == "all":
         arch_filter = ["latent_head"]
 
     quant_filter = args.quant_modes
-    if quant_filter is None and args.least_sparse is not None:
-        quant_filter = ["quantized"]  # Default to quantized-only for least-sparse experiments
+    if quant_filter is None and has_custom:
+        quant_filter = ["quantized"]  # Default to quantized-only for subset experiments
 
     views_filter = args.views
-    if args.least_sparse is not None and args.views is None:
+    if has_custom and args.views is None:
         views_filter = []
 
     load_continuous = (quant_filter is None or "continuous" in quant_filter)
@@ -869,7 +937,8 @@ def main(argv=None):
         for k in raw_container.head_keys:
             meta = raw_container.head_metadata[k]
             spec = meta.get("slice_spec")
-            category = spec.category if spec is not None else "least_sparse"
+            view_name = str(meta.get("slice_name", k))
+            category = spec.category if spec is not None else ("top_rate" if view_name.startswith("TR") else "least_sparse")
             is_frozen = not raw_container.is_active(k)
 
             history_records.append({
@@ -972,7 +1041,7 @@ def main(argv=None):
             in_channels = spec.num_channels
             bpp = slice_bpp_map.get(view, 0.0)
         else:
-            category = "least_sparse"
+            category = "top_rate" if str(view).startswith("TR") else "least_sparse"
             in_channels = meta.get("in_channels", len(channel_indices) if channel_indices else 0)
             if channel_indices:
                 bpp = bpp_z + sum(
@@ -1094,6 +1163,11 @@ def main(argv=None):
     if "least_sparse" in df["category"].values:
         ls_plot = out_dir / "least_sparse_accuracy.png"
         generate_least_sparse_plot(df, ls_plot)
+
+    # If top-rate channels were evaluated, generate top-rate plot
+    if "top_rate" in df["category"].values:
+        tr_plot = out_dir / "top_rate_accuracy.png"
+        generate_top_rate_plot(df, tr_plot)
 
     print("\n[BENCHMARK COMPLETE] Summary of Top-1 Accuracies:")
     display_cols = ["view", "category", "arch", "quant"]

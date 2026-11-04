@@ -5,9 +5,11 @@ import numpy as np
 
 from benchmarks.sparsity import (
     format_density_summary,
+    format_rate_summary,
     get_channel_slice,
     get_channel_slice_info,
     rank_channels_by_density,
+    rank_channels_by_rate,
 )
 
 
@@ -72,6 +74,46 @@ class TestSparsityUtils(unittest.TestCase):
         self.assertIn("Top 8 Least-Sparse Channels", summary)
         self.assertIn("ch_17", summary)
         self.assertIn("S1", summary)
+
+    def test_rank_channels_by_rate(self):
+        """Rate ranking must sort channels in descending order of bpp."""
+        mock_rates = np.zeros(320)
+        mock_rates[10] = 0.0052  # in S0
+        mock_rates[75] = 0.0120  # in S3
+        mock_rates[200] = 0.0015 # in S4
+
+        ranked = rank_channels_by_rate(mock_rates)
+        self.assertEqual(len(ranked), 320)
+
+        # Highest rate first
+        self.assertEqual(ranked[0]["channel"], 75)
+        self.assertEqual(ranked[0]["slice"], "S3")
+        self.assertAlmostEqual(ranked[0]["rate_bpp"], 0.0120)
+
+        # Second highest
+        self.assertEqual(ranked[1]["channel"], 10)
+        self.assertEqual(ranked[1]["slice"], "S0")
+        self.assertAlmostEqual(ranked[1]["rate_bpp"], 0.0052)
+
+        # Third highest
+        self.assertEqual(ranked[2]["channel"], 200)
+        self.assertEqual(ranked[2]["slice"], "S4")
+        self.assertAlmostEqual(ranked[2]["rate_bpp"], 0.0015)
+
+    def test_format_rate_summary(self):
+        """Rate summary report must contain total decodable rate and slice breakdown."""
+        mock_rates = np.zeros(320)
+        mock_rates[10] = 0.0050
+        mock_rates[75] = 0.0100
+
+        ranked = rank_channels_by_rate(mock_rates)
+        summary = format_rate_summary(ranked, top_k_list=[8, 16])
+
+        self.assertIn("ELIC PER-CHANNEL TRANSMISSION RATE RANKING", summary)
+        self.assertIn("Top 8 Highest-Rate Channels", summary)
+        self.assertIn("Total Decodable Rate:", summary)
+        self.assertIn("ch_75", summary)
+        self.assertIn("S3", summary)
 
 
 if __name__ == "__main__":

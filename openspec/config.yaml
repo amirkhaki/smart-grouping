@@ -1,32 +1,36 @@
-schema: spec-driven
+schema: research
 
-# Project context (optional)
-# Add only constraints that should guide OpenSpec artifacts and workflows.
-# Include constraints an agent cannot infer by reading the code.
-# Keep general project documentation and discoverable codebase facts out.
-# Example:
-#   context: |
-#     Designs and tasks must cover Windows, macOS, and Linux
-#     Write all artifacts in Spanish
+context: |
+  ML research project. The goal is reliable knowledge, not a higher metric.
+  Files are the source of truth, not the chat. At session start or after a context
+  reset: read research/findings.md, run `openspec list`, read the active change's
+  files and `git log -n 20`, then summarize the state before acting.
+  A result not logged in research/runs.jsonl did not happen.
+  PROTECTED, never modify: evaluation code, metric definitions, and data split files,
+  including every file named under "Evaluation (protected)" in the active change's
+  design.md. If one looks wrong, or you are unsure whether a file counts, stop and ask.
+  Never change evaluation conditions (metric, sample count, seeds, splits) to improve
+  a result. Never cherry-pick seeds.
+  One variable per experiment.
+  A crash or OOM is a bug, not a negative result: diagnose it and propose a fix; do
+  not draw a conclusion from it.
+  Work in small steps. After each step, stop and report what changed and what you
+  need from me. Do not launch training or evaluation unless I ask.
+  Never invent, estimate, or round numbers; record only results from logs or output I provide.
+  This machine is not the execution environmnet so never try to run things, specially that project has large dependencies like torch.
+  Suggest commit messages like exp(R###): short description -- metric=value, but do not commit unless asked.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always state what is out of scope
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  tasks:
+    - One config file per run; name it in the task
+  analysis:
+    - Say whether higher or lower is better for the metric pinned in design.md
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - "Log each run to research/runs.jsonl before ticking its task: one JSON object per line with fields run, change, tier, seed, commit, config, data_version, metric, value, status (ok, crashed, or invalid), note"
+  archive:
+    guidance:
+      - Confirm research/findings.md was updated and decision.md exists first
+      - Archive with --skip-specs; this project keeps findings in research/findings.md, not in openspec/specs

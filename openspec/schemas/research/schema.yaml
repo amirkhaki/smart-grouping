@@ -1,0 +1,99 @@
+name: research
+version: 2
+description: Hypothesis-driven research loop (hypothesis, design, runs, analysis, decision)
+
+artifacts:
+  - id: hypothesis
+    generates: hypothesis.md
+    description: Falsifiable claim, motivation, and prior evidence
+    template: hypothesis.md
+    instruction: |
+      Write the hypothesis for this investigation.
+      First read research/findings.md. Do not propose anything listed under
+      Refuted unless you state what is different this time. Untested is not Refuted.
+      Required: a claim that can be falsified; a falsification criterion stated as a
+      measurable outcome; the expected effect size; what we do next under each
+      outcome (supported, refuted, inconclusive); links to the findings (F-###) it
+      builds on. Cite only papers you verified by search. Keep it to one page.
+      Stop after writing this and wait for the user to approve before drafting the design.
+    requires: []
+
+  - id: design
+    generates: design.md
+    description: Smallest experiment set that can falsify the hypothesis
+    template: design.md
+    instruction: |
+      Design the smallest set of runs that can falsify the hypothesis.
+      Change exactly one variable versus a named baseline.
+      State the mode: exploratory or confirmatory. Confirmatory needs 3+ seeds and a
+      held-out split never used for selection.
+      Pin the evaluation (metric, split, eval script). These are protected: never
+      modify them to improve a result.
+      Define tiers: Tier 1 = does it run; Tier 2 = small-scale signal, never a
+      conclusion; Tier 3 = full evaluation, the only tier used in analysis.
+      State the theoretical best case or oracle bound if one exists.
+      Note the rough runtime per run, a stopping rule (when to end this
+      investigation), and known confounds.
+      Stop after writing this and wait for approval. No code or runs before the user
+      approves the design.
+    requires:
+      - hypothesis
+
+  - id: tasks
+    generates: tasks.md
+    description: Checklist of runs, ending with a close-out group
+    template: tasks.md
+    instruction: |
+      Break the design into checkbox tasks: - [ ] 1.1 R### description.
+      The user launches every run. Put code or config changes in their own tasks
+      before the run task that needs them.
+      Each run task names its run ID, config path, tier, and what proves it finished
+      (a row appended to research/runs.jsonl).
+      The LAST group must be "Close-out" with exactly three tasks: write analysis.md,
+      update research/findings.md, write decision.md. This keeps apply open until
+      the analysis exists.
+    requires:
+      - design
+
+  - id: analysis
+    generates: analysis.md
+    description: Verdict and interpretation, based only on logged runs
+    template: analysis.md
+    instruction: |
+      Create this only when every task in the Runs group is checked.
+      Use only rows in research/runs.jsonl for this change; do not cite unlogged results.
+      Propose a verdict and the reasoning, then wait: the user confirms the verdict
+      before you update research/findings.md.
+      Verdict is exactly one of: Supported, Refuted, Inconclusive, Invalid.
+      A crash, OOM, or implementation bug is Invalid (fix and rerun), never Refuted.
+      Include seed variability, alternative explanations, confounds, surprises, and
+      what the evidence does NOT support. Grade each claim: verified, partially
+      verified, or unverified.
+    requires:
+      - tasks
+
+  - id: decision
+    generates: decision.md
+    description: What we do next and why
+    template: decision.md
+    instruction: |
+      Propose the decision; the user makes it. Write it up only after the user agrees.
+      Record the decision, alternatives considered, a revisit condition, new
+      hypotheses spawned, ideas to stop pursuing, and which findings (F-###) changed.
+    requires:
+      - analysis
+
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md
+  instruction: |
+    Work on one task at a time, then stop and report. Do not start the next task
+    until the user says to continue.
+    You write and edit code and configs. The user launches training and evaluation runs.
+    When the user gives you results (a log path or pasted output), record them in
+    research/runs.jsonl exactly as given. Never write a metric value that did not come
+    from a log or output the user provided; if a number is missing, ask.
+    Tick a task only after the user confirms it is done.
+    Draw no conclusions from Tier 1 or Tier 2 results.
+    For the Close-out group, follow the analysis and decision instructions; do not skip it.

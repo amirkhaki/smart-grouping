@@ -1,0 +1,43 @@
+name: research-quick
+version: 2
+description: Lightweight sanity check - question then run list
+
+artifacts:
+  - id: hypothesis
+    generates: hypothesis.md
+    description: One-paragraph question and expected outcome
+    template: hypothesis.md
+    instruction: |
+      State the question, the expected outcome, and what would surprise you.
+      Keep it to a short paragraph.
+      Quick runs are Tier 1 or 2 only. They find bugs or hint at a direction; they
+      never support or refute a hypothesis.
+    requires: []
+
+  - id: tasks
+    generates: tasks.md
+    description: Short run list with a close-out task
+    template: tasks.md
+    instruction: |
+      List the work as checkbox tasks with run IDs. The user launches every run.
+      Put code or config changes in their own tasks before the run that needs them.
+      Each run is logged to research/runs.jsonl (tier 1 or 2).
+      Last task: append a two-line result note to hypothesis.md. Ask the user before
+      adding anything to the Open section of research/findings.md, and only if the
+      result suggests a real hypothesis.
+    requires:
+      - hypothesis
+
+apply:
+  requires:
+    - tasks
+  tracks: tasks.md
+  instruction: |
+    Work on one task at a time, then stop and report. Do not start the next task
+    until the user says to continue.
+    You write and edit code and configs. The user launches the runs.
+    When the user gives you results (a log path or pasted output), record them in
+    research/runs.jsonl exactly as given. Never write a metric value that did not come
+    from a log or output the user provided; if a number is missing, ask.
+    Tick a task only after the user confirms it is done.
+    Quick runs are Tier 1 or 2 only: draw no conclusions from them.
