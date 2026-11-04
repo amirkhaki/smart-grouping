@@ -10,12 +10,12 @@
 
 ## 2. Runs
 
-- [ ] 2.1 R004 Smoke test verifying symbol density extraction pipeline on synthetic latents | config: configs/exp_r004_symbol_smoke.json | tier: 1 | done when: row in research/runs.jsonl
-- [ ] 2.2 R005 Small-signal verification of non-tied symbol density ranking across 1,000 cached training samples | config: configs/exp_r005_symbol_signal.json | tier: 2 | done when: row in research/runs.jsonl
-- [ ] 2.3 R006 Full Tier-2 probe evaluation across SD8, SD16, SD32, SD64, SD128 (30 epochs, leak-free validation split) | config: configs/exp_r006_symbol_density_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
+- [x] 2.1 R004 Smoke test verifying symbol density extraction pipeline on synthetic latents | config: configs/exp_r004_symbol_smoke.json | tier: 1 | done when: row in research/runs.jsonl
+- [x] 2.2 R005 Small-signal verification of non-tied symbol density ranking across 1,000 cached training samples | config: configs/exp_r005_symbol_signal.json | tier: 2 | done when: row in research/runs.jsonl
+- [x] 2.3 R006 Full Tier-2 probe evaluation across SD8, SD16, SD32, SD64, SD128 (30 epochs, leak-free validation split) | config: configs/exp_r006_symbol_density_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
 
 ## 3. Close-out
 
-- [ ] 3.1 Write analysis.md from logged runs
-- [ ] 3.2 Update research/findings.md
-- [ ] 3.3 Write decision.md
+- [x] 3.1 Write analysis.md from logged runs
+- [x] 3.2 Update research/findings.md
+- [x] 3.3 Write decision.md
