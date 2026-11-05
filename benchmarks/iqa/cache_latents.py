@@ -284,8 +284,10 @@ def main(argv=None):
 
                 # Extract latents and per-slice bitrates
                 outputs = extractor(imgs)
-                y_hat = outputs["latents_quantized"].cpu().numpy().astype(np.float16)
-                y_cont = outputs["latents_continuous"].cpu().numpy().astype(np.float16)
+                y_hat_tensor = outputs["y_hat"] if "y_hat" in outputs else outputs["latents_quantized"]
+                y_cont_tensor = outputs["y"] if "y" in outputs else outputs["latents_continuous"]
+                y_hat = y_hat_tensor.cpu().numpy().astype(np.float16)
+                y_cont = y_cont_tensor.cpu().numpy().astype(np.float16)
                 bpp = outputs["bitrates_bpp"].cpu().numpy().astype(np.float32)
 
                 f["latents_quantized"][cursor:cursor + B] = y_hat
@@ -295,6 +297,7 @@ def main(argv=None):
                 f["bitrates_bpp"][cursor:cursor + B] = bpp
 
                 cursor += B
+                f.flush()
 
         elapsed = time.time() - t0
         print(f"[COMPLETE] Extracted {cursor} samples in {elapsed:.1f}s ({elapsed / max(1, cursor):.3f}s/img)")
