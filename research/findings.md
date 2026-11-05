@@ -37,7 +37,33 @@ Notes:
 - SD32 (32 ch, 0.0475 bpp) achieves 48.81% Top-1 accuracy, matching TR32 (49.40%) within initial random weight projection variance (-0.59%) and outperforming full-capacity 128-channel C4 (48.53% at 0.1835 bpp) with 74.1% bit savings.
 - Proves that spatial non-zero frequency of transmitted symbols is the fundamental operational driver of both bitrate expenditure and semantic representation in ELIC.
 
+## F-004: Cumulative Latent Slices Peak at C3 (128 Channels) for Image Quality Assessment While S4 Ingestion Degrades Performance
+Status: supported
+Confidence: high
+Evidence: runs R010, R011, R012, change cumulative-density-iqa
+Caveats: Evaluated on KonIQ-10k with ELIC lambda=0.45, multi-head probe w=256, 70/10/20 train/val/test split under seed 42.
+Related: F-003
+Notes:
+- Cumulative autoregressive slice expansion exhibits monotonic gains from base slice S0 through C3: S0 (16 ch, Test SRCC = 0.7205) -> C1 (32 ch, 0.7219) -> C2 (64 ch, 0.7253) -> C3 (128 ch, 0.7396 SRCC, 0.7575 PLCC, 0.1127 RMSE).
+- C3 ([0:128]) establishes the global peak performance across all evaluated models on KonIQ-10k.
+- Appending the remaining 192 channels of slice S4 ([128:320]) to form full latent C4 (320 ch) degrades Test SRCC by -0.0115 (down to 0.7281), PLCC by -0.0128 (down to 0.7447), and increases RMSE (from 0.1127 to 0.1152).
+- Discarding slice S4 reduces latent feature bandwidth and transmission size by 60% while simultaneously boosting perceptual quality assessment accuracy.
+
 ## Refuted (do not re-propose without stating what is different)
+
+## F-005: Transmitted Symbol Density Channel Selection Outperforms Contiguous Autoregressive Slices in Perceptual Quality Assessment
+Status: refuted
+Confidence: high
+Evidence: runs R010, R011, R012, change cumulative-density-iqa
+Caveats: Evaluated on KonIQ-10k with ELIC lambda=0.45, multi-head probe w=256, 70/10/20 train/val/test split under seed 42.
+Related: F-001, F-002, F-004
+Notes:
+- While discrete symbol density s_c = P(round(y_c - mu_c) != 0) successfully prioritized informative channels for semantic classification on Caltech-256 (F-002), it consistently underperforms fixed contiguous slices for perceptual quality assessment on KonIQ-10k across all channel budgets.
+- S0 (16 ch, 0.7205 SRCC) outperforms SD16 (16 ch, 0.6910 SRCC) by +0.0295 SRCC.
+- C1 (32 ch, 0.7219 SRCC) outperforms SD32 (32 ch, 0.7069 SRCC) by +0.0150 SRCC.
+- C2 (64 ch, 0.7253 SRCC) outperforms SD64 (64 ch, 0.7124 SRCC) by +0.0129 SRCC.
+- C3 (128 ch, 0.7396 SRCC) outperforms SD128 (128 ch, 0.7108 SRCC) by +0.0288 SRCC.
+- Symbol density preferentially selects high-entropy stochastic texture channels (e.g., ch_50, 115, 126, 144, 287 from S2, S3, S4), which act as content-dependent noise for quality assessment and break the causal autoregressive dependency chain of ELIC's contextual transforms.
 
 ## F-003: High-Frequency Slices in Learned Compression Invert the Latent Hierarchy for Image Quality Assessment
 Status: refuted
