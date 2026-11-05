@@ -118,7 +118,10 @@ def evaluate_loader(
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Multi-Head IQA Probe Trainer and Evaluator.")
     parser.add_argument("--h5-cache", type=str, default=None, help="Path to HDF5 cache file")
-    parser.add_argument("--views", nargs="+", default=["S0", "S1", "S2", "S3", "S4", "C4"], help="Slice views to train")
+    parser.add_argument("--views", nargs="+", default=["S0", "C1", "C2", "C3", "C4"], help="Slice views to train")
+    parser.add_argument("--symbol-density", nargs="+", type=int, default=None, help="Top-K symbol-density channel subsets (e.g. 8 16 32 64 128)")
+    parser.add_argument("--symbol-density-samples", type=int, default=2000, help="Training latents for symbol density (default: 2000)")
+    parser.add_argument("--checkpoint", type=str, default="0.45", help="ELIC checkpoint lambda for symbol density (default: 0.45)")
     parser.add_argument("--stem-channels", type=int, default=256, help="Stem channel count (default: 256)")
     parser.add_argument("--quant-mode", type=str, default="quantized", choices=["quantized", "continuous"])
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs (default: 30)")
@@ -172,10 +175,59 @@ def main(argv=None):
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
-    # 2. Build Multi-Head Model
-    print(f"[INIT] Initializing MultiHeadIQARegressionContainer with views: {args.views}")
+    # 2. Handle Custom Subsets (Symbol Density) & Build Multi-Head Model
+    custom_subsets = {}
+    if args.symbol_density:
+        if args.synthetic:
+            print(f"[SYMBOL-DENSITY] Generating synthetic symbol densities for {args.symbol_density}")
+            ranked_by_symbol_density = [
+                {"channel": c, "symbol_density": float(1.0 / (c + 1)), "rank": c + 1} for c in range(320)
+            ]
+        else:
+            from benchmarks.cache_latents import resolve_checkpoint
+            from benchmarks.elic_extractor import ELICFeatureExtractor
+            from benchmarks.sparsity import (
+                compute_channel_symbol_density_from_latents,
+                rank_channels_by_symbol_density,
+                format_symbol_density_summary,
+            )
+
+            ckpt_dir = Path("/tmp/checkpoints") if Path("/tmp").is_dir() else (out_dir / "checkpoints")
+            ckpt_path, _ = resolve_checkpoint(args.checkpoint, ckpt_dir)
+            print(f"\n[SYMBOL-DENSITY] Loading frozen ELIC model from: {ckpt_path} on {device}...")
+            extractor = ELICFeatureExtractor.from_checkpoint(ckpt_path, device=str(device))
+
+            print(f"[SYMBOL-DENSITY] Computing per-channel symbol density across up to {args.symbol_density_samples} training latents...")
+            densities = compute_channel_symbol_density_from_latents(
+                extractor=extractor,
+                h5_source=h5_path,
+                split="train",
+                batch_size=args.batch_size,
+                max_samples=args.symbol_density_samples,
+                device=str(device),
+            )
+            ranked_by_symbol_density = rank_channels_by_symbol_density(densities)
+            print(format_symbol_density_summary(ranked_by_symbol_density, top_k_list=args.symbol_density))
+
+        # Save symbol density ranking artifacts
+        sd_json = out_dir / "channel_symbol_density_ranking.json"
+        with open(sd_json, "w") as f:
+            json.dump(ranked_by_symbol_density, f, indent=2)
+
+        sd_csv = out_dir / "channel_symbol_density_ranking.csv"
+        with open(sd_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(ranked_by_symbol_density[0].keys()))
+            writer.writeheader()
+            writer.writerows(ranked_by_symbol_density)
+
+        for k in args.symbol_density:
+            indices = [r["channel"] for r in ranked_by_symbol_density[:k]]
+            custom_subsets[f"SD{k}"] = indices
+
+    print(f"[INIT] Initializing MultiHeadIQARegressionContainer with views: {args.views} and custom_subsets: {list(custom_subsets.keys())}")
     model = MultiHeadIQARegressionContainer(
         views=args.views,
+        custom_subsets=custom_subsets,
         stem_channels=args.stem_channels,
         loss_alpha=args.loss_alpha,
         loss_beta=args.loss_beta,

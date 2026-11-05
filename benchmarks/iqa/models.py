@@ -96,6 +96,7 @@ class MultiHeadIQARegressionContainer(nn.Module):
     def __init__(
         self,
         views: Optional[List[str]] = None,
+        custom_subsets: Optional[Dict[str, List[int]]] = None,
         stem_channels: int = 256,
         spatial_dropout: float = 0.05,
         drop_path: float = 0.1,
@@ -103,16 +104,34 @@ class MultiHeadIQARegressionContainer(nn.Module):
         loss_beta: float = 0.5,
     ):
         super().__init__()
-        self.views = views or ["S0", "S1", "S2", "S3", "S4", "C4"]
+        requested_views = list(views) if views else ["S0", "S1", "S2", "S3", "S4", "C4"]
+        if custom_subsets:
+            for k in custom_subsets:
+                if k not in requested_views:
+                    requested_views.append(k)
+
+        self.views = requested_views
         self.heads = nn.ModuleDict()
         self.loss_fn = JointIQALoss(alpha=loss_alpha, beta=loss_beta)
         self.head_metadata: Dict[str, Dict[str, Any]] = {}
+        self.view_selectors: Dict[str, Tuple[str, Any]] = {}
 
         for view in self.views:
-            if view not in self.IQA_SLICE_MAP:
-                raise ValueError(f"Unknown slice view '{view}'. Supported: {list(self.IQA_SLICE_MAP.keys())}")
-            start_ch, end_ch = self.IQA_SLICE_MAP[view]
-            num_channels = end_ch - start_ch
+            if view in self.IQA_SLICE_MAP:
+                start_ch, end_ch = self.IQA_SLICE_MAP[view]
+                num_channels = end_ch - start_ch
+                self.view_selectors[view] = ("slice", (start_ch, end_ch))
+                meta_extra = {"start_ch": start_ch, "end_ch": end_ch, "indices": None}
+            elif custom_subsets and view in custom_subsets:
+                indices = custom_subsets[view]
+                num_channels = len(indices)
+                self.view_selectors[view] = ("indices", torch.tensor(indices, dtype=torch.long))
+                meta_extra = {"start_ch": None, "end_ch": None, "indices": indices}
+            else:
+                raise ValueError(
+                    f"Unknown view '{view}'. Must be in IQA_SLICE_MAP ({list(self.IQA_SLICE_MAP.keys())}) "
+                    f"or custom_subsets ({list(custom_subsets.keys()) if custom_subsets else []})"
+                )
 
             head = LatentIQARegressor(
                 in_channels=num_channels,
@@ -124,18 +143,22 @@ class MultiHeadIQARegressionContainer(nn.Module):
             self.head_metadata[view] = {
                 "view": view,
                 "in_channels": num_channels,
-                "start_ch": start_ch,
-                "end_ch": end_ch,
                 "stem_channels": stem_channels,
                 "num_params": sum(p.numel() for p in head.parameters()),
+                **meta_extra,
             }
 
     def forward(self, full_latents: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Compute predictions across all heads from (B, 320, 16, 16) full latent tensors."""
         predictions = {}
         for view, head in self.heads.items():
-            start_ch, end_ch = self.IQA_SLICE_MAP[view]
-            x_slice = full_latents[:, start_ch:end_ch, :, :]
+            mode, selector = self.view_selectors[view]
+            if mode == "slice":
+                start_ch, end_ch = selector
+                x_slice = full_latents[:, start_ch:end_ch, :, :]
+            else:
+                idx = selector.to(full_latents.device)
+                x_slice = full_latents[:, idx, :, :]
             predictions[view] = head(x_slice)
         return predictions
 

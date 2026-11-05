@@ -1,0 +1,15 @@
+{
+  "run_id": "R011",
+  "tier": 2,
+  "description": "Tier-2 Signal test computing transmitted symbol density across 2,000 KonIQ-10k latents and ranking all 320 channels",
+  "command": "python -m benchmarks.iqa.train_probe --views S0 C1 --symbol-density 8 16 32 64 128 --symbol-density-samples 2000 --stem-channels 256 --epochs 2 --batch-size 64 --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "dataset": "koniq10k",
+  "views": ["S0", "C1"],
+  "symbol_density": [8, 16, 32, 64, 128],
+  "symbol_density_samples": 2000,
+  "stem_channels": 256,
+  "epochs": 2,
+  "batch_size": 64,
+  "seed": 42
+}

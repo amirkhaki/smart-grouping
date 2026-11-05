@@ -1,0 +1,13 @@
+{
+  "run_id": "R010",
+  "tier": 1,
+  "description": "Tier-1 Smoke test verifying multi-head probe training with arbitrary channel subsets and cumulative slices on synthetic latents",
+  "command": "python -m benchmarks.iqa.train_probe --synthetic --views S0 C1 C2 C3 C4 --symbol-density 8 16 32 --stem-channels 256 --epochs 2 --batch-size 16 --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "views": ["S0", "C1", "C2", "C3", "C4"],
+  "symbol_density": [8, 16, 32],
+  "stem_channels": 256,
+  "epochs": 2,
+  "batch_size": 16,
+  "seed": 42
+}

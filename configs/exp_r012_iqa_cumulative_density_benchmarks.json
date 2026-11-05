@@ -1,0 +1,21 @@
+{
+  "run_id": "R012",
+  "tier": 3,
+  "description": "Tier-3 Full benchmark evaluation of cumulative views (S0, C1, C2, C3, C4) and symbol-density views (SD8, SD16, SD32, SD64, SD128) across 30 epochs on Kaggle 2x Tesla T4 GPUs",
+  "command": "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --symbol-density 8 16 32 64 128 --symbol-density-samples 2000 --stem-channels 256 --lr 1e-3 --weight-decay 1e-4 --loss-alpha 1.0 --loss-beta 0.5 --epochs 30 --patience 5 --batch-size 64 --seed 42 --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "dataset": "koniq10k",
+  "split": "70/10/20",
+  "views": ["S0", "C1", "C2", "C3", "C4"],
+  "symbol_density": [8, 16, 32, 64, 128],
+  "symbol_density_samples": 2000,
+  "stem_channels": 256,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "loss_alpha": 1.0,
+  "loss_beta": 0.5,
+  "epochs": 30,
+  "patience": 5,
+  "batch_size": 64,
+  "seed": 42
+}
