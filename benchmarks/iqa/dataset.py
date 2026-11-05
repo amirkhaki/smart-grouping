@@ -102,7 +102,14 @@ class IQADatasetWrapper(Dataset):
         canonical_name = IQA_NAME_MAP.get(dataset_name.lower(), dataset_name)
         self.transform = get_iqa_transform(crop_size=crop_size)
 
-        from iqadataset import load_dataset_pytorch
+        try:
+            from iqadataset import load_dataset_pytorch
+        except ImportError:
+            import subprocess
+            import sys
+            print("[INIT] 'iqadataset' not found; installing via pip...", flush=True)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "iqadataset"])
+            from iqadataset import load_dataset_pytorch
         self.ds = load_dataset_pytorch(
             canonical_name,
             dataset_root=str(dataset_root),

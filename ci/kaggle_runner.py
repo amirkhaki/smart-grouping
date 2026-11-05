@@ -146,10 +146,10 @@ try:
 
     # 3. Pip install dependencies
     try:
-        sh([sys.executable, "-m", "pip", "install", "compressai==1.1.5", "gdown", "h5py", "timm", "ptflops", "thop"])
+        sh([sys.executable, "-m", "pip", "install", "compressai==1.1.5", "gdown", "h5py", "timm", "ptflops", "thop", "iqadataset"])
     except Exception as e:
         print(f"Warning: compressai==1.1.5 install failed ({e}), trying generic compressai...", flush=True)
-        sh([sys.executable, "-m", "pip", "install", "compressai", "gdown", "h5py", "timm", "ptflops", "thop"])
+        sh([sys.executable, "-m", "pip", "install", "compressai", "gdown", "h5py", "timm", "ptflops", "thop", "iqadataset"])
 
     try:
         sh([sys.executable, "-m", "pip", "install", "--no-deps", "-e", str(SRC)])
