@@ -12,7 +12,7 @@
 ## 2. Runs
 
 - [x] 2.1 R013 Smoke test verifying full-frame extraction ($48 \times 64$), LZF compression, independent optimizers, and soft pairwise loss on mock latents | config: configs/exp_r013_fullframe_smoke.json | tier: 1 | done when: row in research/runs.jsonl
-- [ ] 2.2 R014 Full-frame latent extraction and LZF HDF5 caching of all 10,073 KonIQ-10k images on Kaggle 2x Tesla T4 GPUs | config: configs/exp_r014_fullframe_cache.json | tier: 2 | done when: row in research/runs.jsonl
+- [x] 2.2 R014 Full-frame latent extraction and LZF HDF5 caching of all 10,073 KonIQ-10k images on Kaggle 2x Tesla T4 GPUs | config: configs/exp_r014_fullframe_cache.json | tier: 2 | done when: row in research/runs.jsonl
 - [ ] 2.3 R015 5-seed benchmark evaluation across S0, C1, C2, C3, C4 with independent optimizers, soft pairwise ranking loss, and paired bootstrap testing | config: configs/exp_r015_fullframe_pairwise_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
 
 ## 3. Close-out
