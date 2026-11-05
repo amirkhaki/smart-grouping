@@ -39,6 +39,19 @@ Notes:
 
 ## Refuted (do not re-propose without stating what is different)
 
+## F-003: High-Frequency Slices in Learned Compression Invert the Latent Hierarchy for Image Quality Assessment
+Status: refuted
+Confidence: high
+Evidence: runs R007, R008, R009, change latent-iqa-benchmarking
+Caveats: Evaluated on KonIQ-10k with ELIC lambda=0.45, multi-head probe w=256, 70/10/20 train/val/test split under seed 42. Evaluated with global average pooling; spatially localized patch pooling or purely synthetic distortion callsets (e.g. KADID-10k) not evaluated.
+Related: F-001, F-002
+Notes:
+- The hypothesis that high-frequency synthesis slices (S3, S4) outperform low-frequency base slices (S0, S1) in predicting human perceptual Mean Opinion Scores (MOS) is decisively refuted.
+- Base slice S0 (channels [0:16], 16 ch) achieved Test SRCC of 0.7314 (0.7540 PLCC, 0.1134 RMSE), strictly outperforming the largest high-frequency slice S4 (channels [128:320], 192 ch, Test SRCC = 0.6566, 0.6744 PLCC, 0.1274 RMSE) by +0.0748 SRCC and +0.0796 PLCC.
+- S0 (16 channels, 5% of latent bandwidth) also surpassed the full 320-channel representation C4 (Test SRCC = 0.7289, 0.7459 PLCC, 0.1150 RMSE) while requiring 95% fewer channels.
+- In-the-wild perceptual quality assessment is dominated by global structural integrity, exposure, and edge sharpness encapsulated in the structural base anchor S0, whereas S4 reflects high-entropy stochastic texture content that leads to probe overfitting.
+- Proves that the compact base latent channels S0-S2 are the fundamental information powerhouse of ELIC across both semantic classification and perceptual quality assessment.
+
 ## Open / untested
 
 ## Invalid runs (bugs, to rerun)

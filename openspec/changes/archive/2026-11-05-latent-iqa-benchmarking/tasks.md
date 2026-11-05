@@ -13,11 +13,11 @@
 ## 2. Runs
 
 - [x] 2.1 R007 Smoke test verifying IQA latent caching via `iqadataset`, regression loss, and SRCC/PLCC metric calculation on synthetic latents | config: configs/exp_r007_iqa_smoke.json | tier: 1 | done when: row in research/runs.jsonl
-- [ ] 2.2 R008 Small-signal verification of IQA regression convergence across 1,000 cached KonIQ-10k samples on 70/10/20 split | config: configs/exp_r008_iqa_signal.json | tier: 2 | done when: row in research/runs.jsonl
-- [ ] 2.3 R009 Full multi-head IQA probe evaluation across S0, S1, S2, S3, S4, and C4 on KonIQ-10k for 30 epochs on Kaggle 2x Tesla T4 GPUs | config: configs/exp_r009_iqa_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
+- [x] 2.2 R008 Small-signal verification of IQA regression convergence across 1,000 cached KonIQ-10k samples on 70/10/20 split | config: configs/exp_r008_iqa_signal.json | tier: 2 | done when: row in research/runs.jsonl
+- [x] 2.3 R009 Full multi-head IQA probe evaluation across S0, S1, S2, S3, S4, and C4 on KonIQ-10k for 30 epochs on Kaggle 2x Tesla T4 GPUs | config: configs/exp_r009_iqa_benchmarks.json | tier: 3 | done when: row in research/runs.jsonl
 
 ## 3. Close-out
 
-- [ ] 3.1 Write analysis.md from logged runs
-- [ ] 3.2 Update research/findings.md
-- [ ] 3.3 Write decision.md
+- [x] 3.1 Write analysis.md from logged runs
+- [x] 3.2 Update research/findings.md
+- [x] 3.3 Write decision.md
