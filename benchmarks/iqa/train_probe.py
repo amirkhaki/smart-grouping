@@ -36,11 +36,12 @@ class CachedIQADataset(Dataset):
         h5_path: Path,
         split: str = "train",
         quant_mode: str = "quantized",
-        in_memory: bool = True,
+        in_memory: bool = False,
     ):
         super().__init__()
         self.h5_path = str(h5_path)
         self.in_memory = in_memory
+        self.f = None
         dataset_key = "latents_quantized" if quant_mode == "quantized" else "latents_continuous"
 
         with h5py.File(self.h5_path, "r") as f:
@@ -58,34 +59,44 @@ class CachedIQADataset(Dataset):
                     dataset_key = "latents_quantized"
                 else:
                     raise KeyError(f"Neither '{dataset_key}' nor 'latents_quantized' found. Available: {list(f.keys())}")
+            self.dataset_key = dataset_key
+
+            # Always load lightweight 1D scores into RAM (~30 KB)
+            raw_scores = f["mos_scores"][:][self.indices]
+            self.scores = torch.from_numpy(raw_scores).float()
 
             if self.in_memory:
                 print(f"[CACHE] Loading {self.total_samples} '{split}' samples into RAM (fp16) from {dataset_key}...")
-                raw_latents = f[dataset_key][:][self.indices]
-                # Store as fp16 in RAM to halve memory consumption (~13.8 GB vs 27.7 GB)
+                raw_latents = f[dataset_key][self.indices]
                 self.latents = torch.from_numpy(raw_latents)
                 if self.latents.dtype != torch.float16:
                     self.latents = self.latents.half()
-                raw_scores = f["mos_scores"][:][self.indices]
-                self.scores = torch.from_numpy(raw_scores).float()
             else:
                 self.latents = None
-                self.scores = None
+                print(f"[CACHE] Initialized '{split}' dataset ({self.total_samples} samples) for on-demand HDF5 streaming")
 
     def __len__(self) -> int:
         return self.total_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.in_memory:
+        if self.in_memory and self.latents is not None:
             return self.latents[idx].float(), self.scores[idx]
 
-        # Streaming fallback
-        h5_idx = self.indices[idx]
-        with h5py.File(self.h5_path, "r", swmr=True) as f:
-            dataset_key = "latents_quantized"
-            latent = torch.from_numpy(f[dataset_key][h5_idx]).float()
-            score = torch.tensor(float(f["mos_scores"][h5_idx]), dtype=torch.float32)
-            return latent, score
+        # Lazy open HDF5 per DataLoader worker process
+        if self.f is None:
+            self.f = h5py.File(self.h5_path, "r", swmr=True)
+
+        h5_idx = int(self.indices[idx])
+        latent = torch.from_numpy(self.f[self.dataset_key][h5_idx]).float()
+        score = self.scores[idx]
+        return latent, score
+
+    def __del__(self):
+        if hasattr(self, "f") and self.f is not None:
+            try:
+                self.f.close()
+            except Exception:
+                pass
 
 
 class SyntheticInMemoryDataset(Dataset):
@@ -208,7 +219,9 @@ def parse_args(argv=None):
     parser.add_argument("--channel-dropout", type=float, default=0.1, help="Input channel dropout (default: 0.1)")
     parser.add_argument("--quant-mode", type=str, default="quantized", choices=["quantized", "continuous"])
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs (default: 30)")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
+    parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes (default: 2)")
+    parser.add_argument("--in-memory", action="store_true", help="Load latents into RAM (default: False, stream from HDF5)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
     parser.add_argument("--weight-decay", type=float, default=0.02, help="Weight decay (default: 0.02)")
     parser.add_argument("--loss-type", type=str, default="pairwise", choices=["pairwise", "joint"], help="Loss type (default: pairwise)")
@@ -241,9 +254,30 @@ def train_single_seed(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
+    num_workers = getattr(args, "num_workers", 2)
+    pin_mem = (device.type == "cuda")
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=num_workers,
+        pin_memory=pin_mem,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_mem,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_mem,
+    )
 
     model = MultiHeadIQARegressionContainer(
         views=args.views,
@@ -396,9 +430,9 @@ def main(argv=None):
             else:
                 raise FileNotFoundError(f"HDF5 cache file not found (specified: {args.h5_cache})")
 
-        train_ds = CachedIQADataset(h5_path, split="train", quant_mode=args.quant_mode, in_memory=True)
-        val_ds = CachedIQADataset(h5_path, split="val", quant_mode=args.quant_mode, in_memory=True)
-        test_ds = CachedIQADataset(h5_path, split="test", quant_mode=args.quant_mode, in_memory=True)
+        train_ds = CachedIQADataset(h5_path, split="train", quant_mode=args.quant_mode, in_memory=args.in_memory)
+        val_ds = CachedIQADataset(h5_path, split="val", quant_mode=args.quant_mode, in_memory=args.in_memory)
+        test_ds = CachedIQADataset(h5_path, split="test", quant_mode=args.quant_mode, in_memory=args.in_memory)
 
     # 2. Handle Custom Subsets (Symbol Density) if requested
     custom_subsets = {}
