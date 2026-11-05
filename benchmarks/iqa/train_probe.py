@@ -151,15 +151,18 @@ def main(argv=None):
         val_ds = SyntheticInMemoryDataset(num_samples=15, seed=args.seed + 1)
         test_ds = SyntheticInMemoryDataset(num_samples=20, seed=args.seed + 2)
     else:
-        h5_path = Path(args.h5_cache)
-        if not h5_path.is_file():
-            # Search /kaggle/input for any .h5 file if omitted
+        if args.h5_cache and Path(args.h5_cache).is_file():
+            h5_path = Path(args.h5_cache)
+        else:
+            # Search /kaggle/input for any .h5 file if omitted or not found
             found = list(Path("/kaggle/input").rglob("*.h5"))
+            if not found and Path(".").is_dir():
+                found = list(Path(".").rglob("*.h5"))
             if found:
                 h5_path = found[0]
                 print(f"[INIT] Discovered HDF5 cache: {h5_path}")
             else:
-                raise FileNotFoundError(f"HDF5 cache file not found at {args.h5_cache}")
+                raise FileNotFoundError(f"HDF5 cache file not found (specified: {args.h5_cache})")
 
         train_ds = CachedIQADataset(h5_path, split="train", quant_mode=args.quant_mode, in_memory=True)
         val_ds = CachedIQADataset(h5_path, split="val", quant_mode=args.quant_mode, in_memory=True)
@@ -277,6 +280,13 @@ def main(argv=None):
     # 5. Export Output Artifacts
     csv_path = out_dir / "iqa_master_results.csv"
     with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(master_records[0].keys()))
+        writer.writeheader()
+        writer.writerows(master_records)
+
+    # Also write master_results.csv for GitHub Actions Job Summary compatibility
+    master_csv_path = out_dir / "master_results.csv"
+    with open(master_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(master_records[0].keys()))
         writer.writeheader()
         writer.writerows(master_records)
