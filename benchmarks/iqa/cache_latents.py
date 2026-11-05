@@ -150,6 +150,11 @@ def parse_args(argv=None):
         help="Batch size for feature extraction (default: 16)",
     )
     parser.add_argument(
+        "--save-continuous",
+        action="store_true",
+        help="Also store continuous latents (warning: high-entropy floats do not compress under LZF and add ~18 GB)",
+    )
+    parser.add_argument(
         "--num-workers",
         type=int,
         default=2,
@@ -271,13 +276,14 @@ def main(argv=None):
             chunks=chunk_shape,
             compression="lzf",
         )
-        f.create_dataset(
-            "latents_continuous",
-            shape=(N_total, LATENT_TOTAL_CHANNELS, H_y, W_y),
-            dtype=np.float16,
-            chunks=chunk_shape,
-            compression="lzf",
-        )
+        if args.save_continuous:
+            f.create_dataset(
+                "latents_continuous",
+                shape=(N_total, LATENT_TOTAL_CHANNELS, H_y, W_y),
+                dtype=np.float16,
+                chunks=chunk_shape,
+                compression="lzf",
+            )
         f.create_dataset("mos_scores", shape=(N_total,), dtype=np.float32)
         f.create_dataset("raw_scores", shape=(N_total,), dtype=np.float32)
         f.create_dataset("is_train", shape=(N_total,), dtype=bool)
@@ -298,7 +304,6 @@ def main(argv=None):
         f.attrs["no_crop"] = bool(args.no_crop)
         f.attrs["spatial_dim"] = (H_y, W_y)
         f.attrs["compression"] = "lzf"
-        f.attrs["crop_size"] = args.crop_size
         f.attrs["total_samples"] = N_total
         f.attrs["seed"] = args.seed
         f.attrs["created_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -316,13 +321,14 @@ def main(argv=None):
                 # Extract latents and per-slice bitrates
                 outputs = extractor(imgs)
                 y_hat_tensor = outputs["y_hat"] if "y_hat" in outputs else outputs["latents_quantized"]
-                y_cont_tensor = outputs["y"] if "y" in outputs else outputs["latents_continuous"]
                 y_hat = y_hat_tensor.cpu().numpy().astype(np.float16)
-                y_cont = y_cont_tensor.cpu().numpy().astype(np.float16)
                 bpp = outputs["bitrates_bpp"].cpu().numpy().astype(np.float32)
 
                 f["latents_quantized"][cursor:cursor + B] = y_hat
-                f["latents_continuous"][cursor:cursor + B] = y_cont
+                if args.save_continuous:
+                    y_cont_tensor = outputs["y"] if "y" in outputs else outputs["latents_continuous"]
+                    y_cont = y_cont_tensor.cpu().numpy().astype(np.float16)
+                    f["latents_continuous"][cursor:cursor + B] = y_cont
                 f["mos_scores"][cursor:cursor + B] = scores
                 f["raw_scores"][cursor:cursor + B] = raw_s
                 f["bitrates_bpp"][cursor:cursor + B] = bpp

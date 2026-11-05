@@ -51,6 +51,14 @@ class CachedIQADataset(Dataset):
             self.indices = np.where(split_mask)[0]
             self.total_samples = len(self.indices)
 
+            # Fallback gracefully if requested dataset key is missing
+            if dataset_key not in f:
+                if "latents_quantized" in f:
+                    print(f"[CACHE] '{dataset_key}' not in archive; defaulting to 'latents_quantized'")
+                    dataset_key = "latents_quantized"
+                else:
+                    raise KeyError(f"Neither '{dataset_key}' nor 'latents_quantized' found. Available: {list(f.keys())}")
+
             if self.in_memory:
                 print(f"[CACHE] Loading {self.total_samples} '{split}' samples into RAM (fp16) from {dataset_key}...")
                 raw_latents = f[dataset_key][:][self.indices]
