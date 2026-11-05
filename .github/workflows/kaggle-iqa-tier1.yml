@@ -12,7 +12,7 @@ on:
       command:
         description: "Command to execute on Kaggle"
         required: true
-        default: "python -m benchmarks.iqa.cache_latents --checkpoint 0.45 --dataset koniq10k --batch-size 64 --out-dir /kaggle/working"
+        default: "python -m benchmarks.iqa.cache_latents --checkpoint 0.45 --dataset koniq10k --batch-size 64 --data-root /tmp/data --out-dir /kaggle/working"
       checkpoint:
         description: "ELIC Checkpoint lambda (default: 0.45 for maximum fidelity)"
         required: true

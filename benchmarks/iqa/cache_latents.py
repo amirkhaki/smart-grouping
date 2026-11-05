@@ -110,8 +110,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--data-root",
         type=str,
-        default="/kaggle/working/data",
-        help="Directory to download or load IQA dataset (default: /kaggle/working/data)",
+        default="/tmp/data" if Path("/tmp").is_dir() else "data",
+        help="Directory to download or load IQA dataset (default: /tmp/data to keep /kaggle/working clean)",
     )
     parser.add_argument(
         "--checkpoint",
