@@ -1,0 +1,56 @@
+name: kaggle-iqa-tier1
+
+# Tier-1 Caching for IQA: Extracts deterministic quantized and continuous ELIC latents
+# alongside MOS scores and 70/10/20 train/val/test splits on KonIQ-10k and writes
+# koniq10k_elic0450_latents.h5 to /kaggle/working on 2x Tesla T4 GPUs.
+#
+# Pushes to kernel slug "smart-grouping-iqa-tier1-cache". Tier-2 attaches this kernel
+# as a kernel source to access the cached latents.
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to execute on Kaggle"
+        required: true
+        default: "python -m benchmarks.iqa.cache_latents --checkpoint 0.45 --dataset koniq10k --batch-size 64 --out-dir /kaggle/working"
+      checkpoint:
+        description: "ELIC Checkpoint lambda (default: 0.45 for maximum fidelity)"
+        required: true
+        default: "0.45"
+      dataset:
+        description: "IQA Dataset name supported by iqadataset"
+        required: true
+        default: "koniq10k"
+
+concurrency:
+  group: kaggle-iqa-tier1
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: ./.github/actions/kaggle-run
+        with:
+          kaggle_owner: ${{ vars.KAGGLE_USERNAME || secrets.KAGGLE_USERNAME }}
+          kaggle_token: ${{ secrets.KAGGLE_API_TOKEN || secrets.KAGGLE_KEY }}
+          slug: smart-grouping-iqa-tier1-cache
+          command: ${{ inputs.command }}
+          enable_gpu: "true"
+          dataset_sources: "[]"
+          kernel_sources: "[]"
+          artifact_name: kaggle-iqa-tier1-meta-${{ github.sha }}-${{ github.run_id }}
+          # Large .h5 remains on Kaggle; only small provenance files downloaded to GitHub
+          artifact_paths: |
+            out/run_meta.json
+            out/*.log

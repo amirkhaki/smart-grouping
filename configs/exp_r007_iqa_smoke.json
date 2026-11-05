@@ -1,0 +1,12 @@
+{
+  "run_id": "R007",
+  "tier": 1,
+  "description": "Tier-1 Smoke test verifying IQA dataset pipeline, regression loss, and SRCC/PLCC metric calculation on synthetic mock latents",
+  "command": "python -m benchmarks.iqa.train_probe --synthetic --views S0 S1 S4 C4 --stem-channels 256 --epochs 2 --batch-size 16 --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "views": ["S0", "S1", "S4", "C4"],
+  "stem_channels": 256,
+  "epochs": 2,
+  "batch_size": 16,
+  "seed": 42
+}

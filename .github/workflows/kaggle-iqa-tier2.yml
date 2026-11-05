@@ -1,0 +1,63 @@
+name: kaggle-iqa-tier2
+
+# Tier-2 Evaluation for IQA: Trains all multi-head regression probe configurations
+# (S0, S1, S2, S3, S4, C4) concurrently on cached ELIC latents using 2x Tesla T4 GPUs,
+# producing iqa_master_results.csv, iqa_metrics.json, and correlation artifacts.
+#
+# Attaches the latest output from smart-grouping-iqa-tier1-cache as a kernel source.
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Command to execute on Kaggle"
+        required: true
+        default: "python -m benchmarks.iqa.train_probe --views S0 S1 S2 S3 S4 C4 --stem-channels 256 --epochs 30 --patience 5 --batch-size 64 --out-dir /kaggle/working"
+      extra_kernel_sources:
+        description: 'Extra kernel(s) to attach as JSON list, e.g. ["owner/slug"]'
+        required: false
+        default: "[]"
+
+concurrency:
+  group: kaggle-iqa-tier2
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve kernel sources
+        id: sources
+        shell: bash
+        env:
+          OWNER: ${{ vars.KAGGLE_USERNAME || secrets.KAGGLE_USERNAME }}
+          EXTRA: ${{ inputs.extra_kernel_sources || '[]' }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          owner = os.environ["OWNER"]
+          extra = json.loads(os.environ["EXTRA"])
+          merged = [f"{owner}/smart-grouping-iqa-tier1-cache"] + [s for s in extra if s]
+          print("json=" + json.dumps(merged))
+          PY
+
+      - uses: ./.github/actions/kaggle-run
+        with:
+          kaggle_owner: ${{ vars.KAGGLE_USERNAME || secrets.KAGGLE_USERNAME }}
+          kaggle_token: ${{ secrets.KAGGLE_API_TOKEN || secrets.KAGGLE_KEY }}
+          slug: smart-grouping-iqa-tier2-eval
+          command: ${{ inputs.command }}
+          enable_gpu: "true"
+          dataset_sources: "[]"
+          kernel_sources: ${{ steps.sources.outputs.json }}
+          artifact_name: kaggle-iqa-tier2-results-${{ github.sha }}-${{ github.run_id }}
+          artifact_paths: out/
