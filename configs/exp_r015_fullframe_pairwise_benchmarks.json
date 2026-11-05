@@ -1,0 +1,22 @@
+{
+  "run_id": "R015",
+  "tier": 3,
+  "description": "Tier-3 5-seed benchmark evaluation across S0, C1, C2, C3, C4 with independent optimizers, soft pairwise ranking loss, and paired bootstrap testing on full-frame latents",
+  "command": "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --weight-decay 0.02 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 30 --patience 7 --batch-size 64 --multi-seed --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "dataset": "koniq10k",
+  "split": "70/10/20",
+  "views": ["S0", "C1", "C2", "C3", "C4"],
+  "seeds": [42, 43, 44, 45, 46],
+  "stem_channels": 128,
+  "num_blocks": 2,
+  "channel_dropout": 0.1,
+  "weight_decay": 0.02,
+  "lr": 0.001,
+  "loss_type": "pairwise",
+  "loss_tau": 0.03,
+  "loss_anchor": 0.1,
+  "epochs": 30,
+  "patience": 7,
+  "batch_size": 64
+}

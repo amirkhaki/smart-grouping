@@ -1,8 +1,9 @@
 name: kaggle-iqa-tier2
 
 # Tier-2 Evaluation for IQA: Trains all multi-head regression probe configurations
-# (S0, S1, S2, S3, S4, C4) concurrently on cached ELIC latents using 2x Tesla T4 GPUs,
-# producing iqa_master_results.csv, iqa_metrics.json, and correlation artifacts.
+# (S0, C1, C2, C3, C4) with independent optimizers and soft pairwise ranking loss
+# on cached ELIC latents across 5 seeds using 2x Tesla T4 GPUs, producing
+# iqa_master_results.csv, iqa_summary.json, paired_bootstrap_results.json, and test_predictions.npz.
 #
 # Attaches the latest output from smart-grouping-iqa-tier1-cache as a kernel source.
 on:
@@ -11,7 +12,7 @@ on:
       command:
         description: "Command to execute on Kaggle"
         required: true
-        default: "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --symbol-density 8 16 32 64 128 --stem-channels 256 --epochs 30 --patience 5 --batch-size 64 --out-dir /kaggle/working"
+        default: "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --weight-decay 0.02 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 30 --patience 7 --batch-size 64 --multi-seed --out-dir /kaggle/working"
       extra_kernel_sources:
         description: 'Extra kernel(s) to attach as JSON list, e.g. ["owner/slug"]'
         required: false

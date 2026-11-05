@@ -1,0 +1,17 @@
+{
+  "run_id": "R013",
+  "tier": 1,
+  "description": "Tier-1 Smoke test verifying full-frame extraction (48x64), LZF compression, independent per-head optimizers, and soft pairwise loss on mock latents",
+  "command": "python -m benchmarks.iqa.train_probe --synthetic --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 2 --batch-size 16 --out-dir /kaggle/working",
+  "checkpoint": "0.45",
+  "views": ["S0", "C1", "C2", "C3", "C4"],
+  "stem_channels": 128,
+  "num_blocks": 2,
+  "channel_dropout": 0.1,
+  "loss_type": "pairwise",
+  "loss_tau": 0.03,
+  "loss_anchor": 0.1,
+  "epochs": 2,
+  "batch_size": 16,
+  "seed": 42
+}

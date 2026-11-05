@@ -32,6 +32,7 @@ from benchmarks.iqa.dataset import (
 
 
 DEFAULT_IQA_CACHE_FILENAME = "koniq10k_elic0450_latents.h5"
+DEFAULT_IQA_FULLFRAME_CACHE_FILENAME = "koniq10k_elic0450_fullframe_latents.h5"
 
 
 class SyntheticIQADataset(Dataset):
@@ -123,7 +124,12 @@ def parse_args(argv=None):
         "--crop-size",
         type=int,
         default=256,
-        help="Center crop size in pixels (default: 256)",
+        help="Center crop size in pixels (default: 256; ignored if --no-crop is passed)",
+    )
+    parser.add_argument(
+        "--no-crop",
+        action="store_true",
+        help="Extract from native full-frame images without spatial cropping (e.g. 1024x768 -> 64x48)",
     )
     parser.add_argument(
         "--out-dir",
@@ -134,14 +140,14 @@ def parse_args(argv=None):
     parser.add_argument(
         "--filename",
         type=str,
-        default=DEFAULT_IQA_CACHE_FILENAME,
-        help=f"HDF5 archive filename (default: {DEFAULT_IQA_CACHE_FILENAME})",
+        default=None,
+        help="HDF5 archive filename (defaults to koniq10k_elic0450_fullframe_latents.h5 if --no-crop, else koniq10k_elic0450_latents.h5)",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Batch size for feature extraction (default: 64)",
+        default=16,
+        help="Batch size for feature extraction (default: 16)",
     )
     parser.add_argument(
         "--num-workers",
@@ -177,20 +183,31 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.filename is None:
+        filename = (
+            DEFAULT_IQA_FULLFRAME_CACHE_FILENAME
+            if args.no_crop
+            else DEFAULT_IQA_CACHE_FILENAME
+        )
+    else:
+        filename = args.filename
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / args.filename
+    out_path = out_dir / filename
 
     # 1. Resolve and load dataset
     if args.synthetic:
-        print(f"[INIT] Using SyntheticIQADataset (max_samples={args.max_samples or 20})")
-        dataset = SyntheticIQADataset(num_samples=args.max_samples or 20, seed=args.seed)
+        img_size = (768, 1024) if args.no_crop else (args.crop_size, args.crop_size)
+        print(f"[INIT] Using SyntheticIQADataset (max_samples={args.max_samples or 20}, image_size={img_size})")
+        dataset = SyntheticIQADataset(num_samples=args.max_samples or 20, image_size=img_size, seed=args.seed)
     else:
-        print(f"[INIT] Loading IQA dataset '{args.dataset}' via iqadataset (root: {args.data_root})...")
+        print(f"[INIT] Loading IQA dataset '{args.dataset}' via iqadataset (root: {args.data_root}, no_crop={args.no_crop})...")
         dataset = IQADatasetWrapper(
             dataset_name=args.dataset,
             dataset_root=args.data_root,
             crop_size=args.crop_size,
+            no_crop=args.no_crop,
             download=True,
         )
 
@@ -202,6 +219,12 @@ def main(argv=None):
         N_total = args.max_samples
 
     print(f"[INIT] Dataset prepared with {N_total} total samples")
+
+    # Determine dynamic spatial dimensions from the first sample
+    sample_img = dataset[0]["image"]
+    H_in, W_in = sample_img.shape[-2], sample_img.shape[-1]
+    H_y, W_y = H_in // 16, W_in // 16
+    print(f"[INIT] Input image resolution: ({H_in}, {W_in}) -> Latent spatial dim: ({H_y}, {W_y})")
 
     # 2. Compute deterministic 70/10/20 train/val/test split
     split_info = create_deterministic_split(
@@ -236,20 +259,24 @@ def main(argv=None):
         print(f"[INIT] Multi-GPU extraction across {torch.cuda.device_count()} GPUs")
         extractor = CustomDataParallel(extractor)
 
-    # 5. Initialize HDF5 Archive
-    print(f"[INIT] Creating HDF5 cache: {out_path} ({N_total} samples)")
+    # 5. Initialize HDF5 Archive with LZF chunked compression
+    chunk_b = min(16, N_total)
+    chunk_shape = (chunk_b, LATENT_TOTAL_CHANNELS, H_y, W_y)
+    print(f"[INIT] Creating HDF5 cache: {out_path} ({N_total} samples, chunks={chunk_shape}, compression=lzf)")
     with h5py.File(str(out_path), "w") as f:
         f.create_dataset(
             "latents_quantized",
-            shape=(N_total, LATENT_TOTAL_CHANNELS, LATENT_SPATIAL_DIM[0], LATENT_SPATIAL_DIM[1]),
+            shape=(N_total, LATENT_TOTAL_CHANNELS, H_y, W_y),
             dtype=np.float16,
-            chunks=HDF5_CHUNK_SHAPE,
+            chunks=chunk_shape,
+            compression="lzf",
         )
         f.create_dataset(
             "latents_continuous",
-            shape=(N_total, LATENT_TOTAL_CHANNELS, LATENT_SPATIAL_DIM[0], LATENT_SPATIAL_DIM[1]),
+            shape=(N_total, LATENT_TOTAL_CHANNELS, H_y, W_y),
             dtype=np.float16,
-            chunks=HDF5_CHUNK_SHAPE,
+            chunks=chunk_shape,
+            compression="lzf",
         )
         f.create_dataset("mos_scores", shape=(N_total,), dtype=np.float32)
         f.create_dataset("raw_scores", shape=(N_total,), dtype=np.float32)
@@ -267,6 +294,10 @@ def main(argv=None):
         f.attrs["checkpoint"] = str(ckpt_path)
         f.attrs["lambda"] = lmbda_val
         f.attrs["dataset"] = args.dataset
+        f.attrs["crop_size"] = -1 if args.no_crop else args.crop_size
+        f.attrs["no_crop"] = bool(args.no_crop)
+        f.attrs["spatial_dim"] = (H_y, W_y)
+        f.attrs["compression"] = "lzf"
         f.attrs["crop_size"] = args.crop_size
         f.attrs["total_samples"] = N_total
         f.attrs["seed"] = args.seed

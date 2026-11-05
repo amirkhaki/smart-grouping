@@ -2,7 +2,7 @@ name: kaggle-iqa-tier1
 
 # Tier-1 Caching for IQA: Extracts deterministic quantized and continuous ELIC latents
 # alongside MOS scores and 70/10/20 train/val/test splits on KonIQ-10k and writes
-# koniq10k_elic0450_latents.h5 to /kaggle/working on 2x Tesla T4 GPUs.
+# koniq10k_elic0450_fullframe_latents.h5 (LZF compressed) to /kaggle/working on 2x Tesla T4 GPUs.
 #
 # Pushes to kernel slug "smart-grouping-iqa-tier1-cache". Tier-2 attaches this kernel
 # as a kernel source to access the cached latents.
@@ -12,7 +12,7 @@ on:
       command:
         description: "Command to execute on Kaggle"
         required: true
-        default: "python -m benchmarks.iqa.cache_latents --checkpoint 0.45 --dataset koniq10k --batch-size 64 --data-root /tmp/data --out-dir /kaggle/working"
+        default: "python -m benchmarks.iqa.cache_latents --no-crop --checkpoint 0.45 --dataset koniq10k --batch-size 16 --data-root /tmp/data --out-dir /kaggle/working"
       checkpoint:
         description: "ELIC Checkpoint lambda (default: 0.45 for maximum fidelity)"
         required: true

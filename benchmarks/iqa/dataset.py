@@ -22,8 +22,16 @@ IQA_NAME_MAP = {
 }
 
 
-def get_iqa_transform(crop_size: int = 256) -> transforms.Compose:
-    """Center crop transform preserving raw pixel sharpness without interpolation blur."""
+def get_iqa_transform(crop_size: Optional[int] = 256) -> transforms.Compose:
+    """Transform for IQA images.
+    
+    If crop_size is None or <= 0, returns transforms.ToTensor() for native full-frame
+    loading without spatial cropping or interpolation distortion.
+    """
+    if crop_size is None or crop_size <= 0:
+        return transforms.Compose([
+            transforms.ToTensor(),
+        ])
     return transforms.Compose([
         transforms.CenterCrop(crop_size),
         transforms.ToTensor(),
@@ -95,12 +103,14 @@ class IQADatasetWrapper(Dataset):
         self,
         dataset_name: str = "koniq10k",
         dataset_root: Union[str, Path] = "datasets",
-        crop_size: int = 256,
+        crop_size: Optional[int] = 256,
+        no_crop: bool = False,
         download: bool = True,
     ):
         super().__init__()
         canonical_name = IQA_NAME_MAP.get(dataset_name.lower(), dataset_name)
-        self.transform = get_iqa_transform(crop_size=crop_size)
+        effective_crop = None if no_crop else crop_size
+        self.transform = get_iqa_transform(crop_size=effective_crop)
 
         try:
             from iqadataset import load_dataset_pytorch

@@ -1,0 +1,16 @@
+{
+  "run_id": "R014",
+  "tier": 2,
+  "description": "Tier-2 Full-frame latent extraction and LZF HDF5 caching of all 10,073 KonIQ-10k images on Kaggle 2x Tesla T4 GPUs",
+  "command": "python -m benchmarks.iqa.cache_latents --no-crop --dataset koniq10k --checkpoint 0.45 --batch-size 16 --out-dir /kaggle/working --filename koniq10k_elic0450_fullframe_latents.h5",
+  "checkpoint": "0.45",
+  "dataset": "koniq10k",
+  "no_crop": true,
+  "crop_size": null,
+  "batch_size": 16,
+  "compression": "lzf",
+  "filename": "koniq10k_elic0450_fullframe_latents.h5",
+  "expected_spatial_dim": [48, 64],
+  "total_samples": 10073,
+  "seed": 42
+}
