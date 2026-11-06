@@ -342,19 +342,20 @@ def train_single_seed(
             preds = model(latents)
             head_losses = model.compute_head_losses(preds, targets)
 
-            # Decoupled backward pass and per-head gradient norm clipping (1.0)
-            for idx, v in enumerate(model.views):
-                opt = optimizers[v]
-                opt.zero_grad()
-                h_loss = head_losses[v]
-                # Retain computation graph across multiple heads
-                h_loss.backward(retain_graph=(idx < len(model.views) - 1))
-                torch.nn.utils.clip_grad_norm_(model.heads[v].parameters(), max_norm=1.0)
-                opt.step()
+            # Zero grads across all independent heads
+            for v in model.views:
+                optimizers[v].zero_grad()
 
-                train_head_loss_acc[v] += float(h_loss.item())
-
+            # Single unified backward pass over disjoint head subgraphs (avoids retain_graph overhead)
             total_loss = sum(head_losses.values())
+            total_loss.backward()
+
+            # Per-head gradient norm clipping (1.0) and decoupled optimizer step
+            for v in model.views:
+                torch.nn.utils.clip_grad_norm_(model.heads[v].parameters(), max_norm=1.0)
+                optimizers[v].step()
+                train_head_loss_acc[v] += float(head_losses[v].item())
+
             train_loss_acc += float(total_loss.item())
             n_batches += 1
 
