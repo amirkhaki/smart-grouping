@@ -13,6 +13,10 @@ on:
         description: "Command to execute on Kaggle"
         required: true
         default: "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --weight-decay 0.02 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 30 --patience 7 --batch-size 32 --in-memory --multi-seed --out-dir /kaggle/working"
+      slug:
+        description: "Kernel slug / title"
+        required: false
+        default: "smart-grouping-iqa-tier2-eval-v2"
       extra_kernel_sources:
         description: 'Extra kernel(s) to attach as JSON list, e.g. ["owner/slug"]'
         required: false
@@ -55,7 +59,7 @@ jobs:
         with:
           kaggle_owner: ${{ vars.KAGGLE_USERNAME || secrets.KAGGLE_USERNAME }}
           kaggle_token: ${{ secrets.KAGGLE_API_TOKEN || secrets.KAGGLE_KEY }}
-          slug: smart-grouping-iqa-tier2-eval
+          slug: ${{ inputs.slug || 'smart-grouping-iqa-tier2-eval-v2' }}
           command: ${{ inputs.command }}
           enable_gpu: "true"
           dataset_sources: "[]"
