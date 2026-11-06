@@ -12,7 +12,7 @@ on:
       command:
         description: "Command to execute on Kaggle"
         required: true
-        default: "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --weight-decay 0.02 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 30 --patience 7 --batch-size 32 --multi-seed --out-dir /kaggle/working"
+        default: "python -m benchmarks.iqa.train_probe --views S0 C1 C2 C3 C4 --stem-channels 128 --num-blocks 2 --channel-dropout 0.1 --weight-decay 0.02 --loss-type pairwise --loss-tau 0.03 --loss-anchor 0.1 --epochs 30 --patience 7 --batch-size 32 --in-memory --multi-seed --out-dir /kaggle/working"
       extra_kernel_sources:
         description: 'Extra kernel(s) to attach as JSON list, e.g. ["owner/slug"]'
         required: false

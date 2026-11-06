@@ -29,14 +29,23 @@ from benchmarks.iqa.models import MultiHeadIQARegressionContainer
 
 
 class CachedIQADataset(Dataset):
-    """In-memory or streamed PyTorch dataset over cached HDF5 latents and MOS scores."""
+    """Shared in-memory or streamed PyTorch dataset over cached HDF5 latents and MOS scores."""
+
+    _archive_cache: Dict[str, torch.Tensor] = {}
+
+    @classmethod
+    def clear_cache(cls):
+        """Free shared archive raw buffers from memory."""
+        cls._archive_cache.clear()
+        import gc
+        gc.collect()
 
     def __init__(
         self,
         h5_path: Path,
         split: str = "train",
         quant_mode: str = "quantized",
-        in_memory: bool = False,
+        in_memory: bool = True,
     ):
         super().__init__()
         self.h5_path = str(h5_path)
@@ -66,28 +75,39 @@ class CachedIQADataset(Dataset):
             self.scores = torch.from_numpy(raw_scores).float()
 
             if self.in_memory:
-                print(f"[CACHE] Loading {self.total_samples} '{split}' samples into RAM (fp16) from {dataset_key}...")
-                raw_latents = f[dataset_key][self.indices]
-                self.latents = torch.from_numpy(raw_latents)
-                if self.latents.dtype != torch.float16:
-                    self.latents = self.latents.half()
+                cache_key = f"{str(Path(self.h5_path).resolve())}_{self.dataset_key}"
+                if cache_key in CachedIQADataset._archive_cache:
+                    self.shared_latents = CachedIQADataset._archive_cache[cache_key]
+                else:
+                    ds_shape = f[self.dataset_key].shape
+                    print(f"[CACHE] Reading entire '{self.dataset_key}' dataset {ds_shape} into shared RAM (fp16)...", flush=True)
+                    try:
+                        raw_buf = np.empty(ds_shape, dtype=np.float16)
+                        f[self.dataset_key].read_direct(raw_buf)
+                    except Exception as e:
+                        print(f"[CACHE] read_direct fallback due to: {e}", flush=True)
+                        raw_buf = f[self.dataset_key][:]
+                    self.shared_latents = torch.from_numpy(raw_buf)
+                    CachedIQADataset._archive_cache[cache_key] = self.shared_latents
+                    size_gib = (self.shared_latents.element_size() * self.shared_latents.nelement()) / (1024**3)
+                    print(f"[CACHE] Successfully cached {len(self.shared_latents)} samples in host RAM ({size_gib:.2f} GiB)", flush=True)
             else:
-                self.latents = None
+                self.shared_latents = None
                 print(f"[CACHE] Initialized '{split}' dataset ({self.total_samples} samples) for on-demand HDF5 streaming")
 
     def __len__(self) -> int:
         return self.total_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.in_memory and self.latents is not None:
-            return self.latents[idx].float(), self.scores[idx]
+        real_idx = int(self.indices[idx])
+        if self.in_memory and self.shared_latents is not None:
+            return self.shared_latents[real_idx].float(), self.scores[idx]
 
         # Lazy open HDF5 per DataLoader worker process
         if self.f is None:
             self.f = h5py.File(self.h5_path, "r", swmr=True)
 
-        h5_idx = int(self.indices[idx])
-        latent = torch.from_numpy(self.f[self.dataset_key][h5_idx]).float()
+        latent = torch.from_numpy(self.f[self.dataset_key][real_idx]).float()
         score = self.scores[idx]
         return latent, score
 
@@ -221,7 +241,7 @@ def parse_args(argv=None):
     parser.add_argument("--epochs", type=int, default=30, help="Training epochs (default: 30)")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes (default: 2)")
-    parser.add_argument("--in-memory", action="store_true", help="Load latents into RAM (default: False, stream from HDF5)")
+    parser.add_argument("--in-memory", action=argparse.BooleanOptionalAction, default=True, help="Load latents into shared RAM (default: True)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
     parser.add_argument("--weight-decay", type=float, default=0.02, help="Weight decay (default: 0.02)")
     parser.add_argument("--loss-type", type=str, default="pairwise", choices=["pairwise", "joint"], help="Loss type (default: pairwise)")
@@ -254,7 +274,8 @@ def train_single_seed(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    num_workers = getattr(args, "num_workers", 2)
+    # When in-memory, num_workers=0 runs in main process, avoiding Linux fork copy-on-write memory overhead
+    num_workers = 0 if getattr(args, "in_memory", True) else getattr(args, "num_workers", 2)
     pin_mem = (device.type == "cuda")
     train_loader = DataLoader(
         train_ds,
